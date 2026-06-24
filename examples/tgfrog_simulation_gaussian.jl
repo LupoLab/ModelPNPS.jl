@@ -25,6 +25,9 @@
 using ModelPNPS
 import ModelPNPS as TS
 import Luna.Scans
+import Luna
+
+Luna.set_fftw_mode(:estimate)
 
 # --- Pulse / substrate parameters (identical to the mask example) ------------
 λ0           = 260e-9
