@@ -1,0 +1,24 @@
+name = "ModelPNPS"
+uuid = "96957ea8-70b2-4fa7-b6e5-a778e7c886d1"
+authors = ["John Travers <jtravs@gmail.com>"]
+version = "1.0.0-DEV"
+
+[deps]
+FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
+HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
+Luna = "30eb0fb0-5147-11e9-3356-d75b018717ce"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+
+[compat]
+FFTW = "1"
+HDF5 = "0.17.2"
+Luna = ">= 0"
+Statistics = "1.10"
+julia = "1.10"
+
+[extras]
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test", "Random"]
