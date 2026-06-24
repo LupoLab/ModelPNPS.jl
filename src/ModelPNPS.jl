@@ -961,13 +961,17 @@ vector of z positions [m] at which the field is saved during propagation.
   (`range(0, zmax, zsave)`), reproducing the legacy `nz` behaviour exactly
   (including the entrance slice at `z=0` and the exit slice at `z=zmax`).
 - `zsave::AbstractVector` — explicit material thicknesses [m]. Must be strictly
-  increasing, all `> 0`, and all `<= zmax`. `zmax` is appended if not already
+  increasing, all `>= 0`, and all `<= zmax`. `zmax` is appended if not already
   present (within `rtol=1e-12`) so the full-thickness ("`:end`") slice always
   exists.
 
 Because the propagation is a forward-marching integrator with z-independent
 dynamics, the field saved at an intermediate `z` is identical to a dedicated run
 of thickness `z`, so a single `zmax` run yields every shorter thickness for free.
+
+The function is idempotent: re-resolving an already-resolved vector (which the
+integer path produces *with* an entrance slice at `z=0`) returns it unchanged,
+so it is safe to call more than once on the same grid.
 """
 function _resolve_zsave(zsave::Integer, zmax::Real)
     zsave >= 2 || throw(ArgumentError("integer zsave must be ≥ 2, got $zsave"))
@@ -979,8 +983,8 @@ function _resolve_zsave(zsave::AbstractVector, zmax::Real)
     isempty(v) && throw(ArgumentError("zsave vector must be non-empty"))
     issorted(v) && allunique(v) ||
         throw(ArgumentError("zsave must be strictly increasing, got $v"))
-    all(>(0.0), v) ||
-        throw(ArgumentError("all zsave positions must be > 0, got $v"))
+    all(>=(0.0), v) ||
+        throw(ArgumentError("all zsave positions must be ≥ 0, got $v"))
     vmax = maximum(v)
     vmax <= zmax || throw(ArgumentError(
         "zsave position $vmax exceeds the propagation distance zmax=$zmax"))

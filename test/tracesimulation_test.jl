@@ -278,7 +278,14 @@ end
     @test_throws ArgumentError TS._resolve_zsave([6e-6, 2e-6], 10e-6)   # unsorted
     @test_throws ArgumentError TS._resolve_zsave([2e-6, 2e-6], 10e-6)   # duplicate
     @test_throws ArgumentError TS._resolve_zsave([20e-6], 10e-6)        # > zmax
-    @test_throws ArgumentError TS._resolve_zsave([0.0, 5e-6], 10e-6)    # must be > 0
+    @test_throws ArgumentError TS._resolve_zsave([-1e-6, 5e-6], 10e-6)  # negative z
+
+    # Idempotent: re-resolving an already-resolved grid (which the integer path
+    # produces with an entrance slice at z=0) returns it unchanged. This is the
+    # path run_scan exercises when it forwards the resolved vector per delay.
+    @test TS._resolve_zsave(TS._resolve_zsave(11, 40e-6), 40e-6) ==
+          TS._resolve_zsave(11, 40e-6)
+    @test TS._resolve_zsave([0.0, 5e-6, 10e-6], 10e-6) == [0.0, 5e-6, 10e-6]
 end
 
 # -----------------------------------------------------------------------------
