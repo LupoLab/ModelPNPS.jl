@@ -45,7 +45,8 @@ The simulation pipeline is:
    1. Apply `exp(-iωτᵢ)` to the test beam.
    2. Coherently superpose all three beamlets.
    3. Propagate through the substrate via `Luna.run` (adaptive RK4(5)
-      split-step).
+      split-step), optionally saving snapshots at several thicknesses in the
+      one pass (see [Many material thicknesses from one run](@ref)).
    4. Apply the signal-extraction window in k-space.
    5. Extract two spectral diagnostics: a re-imaged on-axis spectrum and a
       fully-integrated spectrum.
@@ -165,7 +166,8 @@ The default `safety=1.5` is conservative; reducing it produces a smaller grid
 extracts the chosen signal window and propagation z-slice, fftshifts the
 ω-dependent arrays into natural (centred) order, and returns the trace and
 reference spectra as a `NamedTuple` ready for inspection, plotting, or custom
-post-processing:
+post-processing (to pull out several material thicknesses at once, see
+[Many material thicknesses from one run](@ref)):
 
 ```julia
 using ModelPNPS
@@ -174,6 +176,62 @@ nt = load_simulated_scan("my_mask_run_collected.h5";
                          window_key="Iω_win", z_index=:end)
 # nt.ω, nt.τ, nt.trace (Nω × Nτ), nt.Iω, nt.It, ...
 ```
+
+## Many material thicknesses from one run
+
+A delay scan propagates the field to the full substrate `thickness`, but the
+trace at any *shorter* thickness can be recovered from the **same** run at
+essentially no extra cost. The propagation is a forward-marching integrator with
+z-independent dynamics (constant density, per-unit-length dispersion), so the
+field captured at an intermediate `z` is identical to a dedicated run of
+thickness `z`. Saving an intermediate snapshot costs only one dense-output
+interpolation — the expensive integration is unchanged. A single 40 µm run
+therefore yields the 1, 10, 20 and 40 µm traces together.
+
+Snapshots are selected with the `zsave` keyword of [`run_scan`](@ref) (forwarded
+to [`simulate_delay_point`](@ref)):
+
+```julia
+# Explicit material thicknesses [m]. `thickness` (= zmax) is appended
+# automatically if absent, so the final slice is always the full-propagation
+# output. Here thickness=40e-6 in build_setup.
+run_scan(setup, τ; scan_name="my_run", exec,
+         zsave=[1e-6, 10e-6, 20e-6, 40e-6])
+
+# Or an integer for a uniform grid of that many slices over [0, thickness]:
+run_scan(setup, τ; scan_name="my_run", exec, zsave=21)
+```
+
+Each per-delay trace dataset (`Iω_win`, `Iω_win_reimaged`, `Iω_full`, and any
+windowed variants) is then stored with shape `(Nω, nz, Nτ)`, and the realized z
+positions are written once to `/grid/zsave`. The default (`zsave=2`, equivalently
+the legacy `nz=2`) keeps the entrance and exit slices only, so existing scripts
+are unchanged.
+
+[`load_simulated_scan`](@ref) exposes the saved thicknesses:
+
+```julia
+# A specific thickness — picks the nearest saved z slice (needs /grid/zsave):
+d10 = load_simulated_scan("my_run_collected.h5"; z_thickness=10e-6)
+# d10.trace is (Nω × Nτ); d10.zsave lists all saved z positions [m].
+
+# Every saved thickness at once — trace becomes (Nω × nz × Nτ):
+allz = load_simulated_scan("my_run_collected.h5"; z_index=:all)
+for (k, z) in enumerate(allz.zsave)
+    trace_k = allz.trace[:, k, :]      # (Nω × Nτ) at thickness z
+end
+```
+
+`z_index=:end` (the default) still returns the full-thickness slice as a 2-D
+`(Nω, Nτ)` trace, and an integer `z_index` selects a slice by index. Files
+written before `zsave` existed simply have no `/grid/zsave` and load exactly as
+before (omitting `zsave`/`z_thickness`).
+
+Cost is the key advantage: adding snapshots leaves the compute time unchanged.
+The only overhead is peak memory — the in-memory 4-D field `(Nω, Nky, Nkx, nz)`
+is held one slice per saved z — which is comfortable for up to ~20 thicknesses at
+realistic grid sizes. (A streaming reduction that decouples memory from `nz`
+entirely is a possible future extension for hundreds of slices.)
 
 ## Diagnostics: the retrievable pulse and the efficiency curve
 
