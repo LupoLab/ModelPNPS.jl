@@ -4,3 +4,6 @@ ModelPNPS = "96957ea8-70b2-4fa7-b6e5-a778e7c886d1"
 
 [sources]
 ModelPNPS = {path = ".."}
+
+[compat]
+Documenter = "1.17.0"
