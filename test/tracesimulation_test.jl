@@ -262,6 +262,61 @@ end
 end
 
 # -----------------------------------------------------------------------------
+@testset "_resolve_zsave" begin
+    # Integer: uniform grid over [0, zmax], reproduces legacy nz behaviour.
+    @test TS._resolve_zsave(2, 10e-6) == [0.0, 10e-6]
+    @test TS._resolve_zsave(3, 10e-6) ≈ [0.0, 5e-6, 10e-6]
+    @test_throws ArgumentError TS._resolve_zsave(1, 10e-6)        # need ≥ 2
+
+    # Vector: zmax appended when absent, not duplicated when present.
+    @test TS._resolve_zsave([2e-6, 6e-6], 10e-6) == [2e-6, 6e-6, 10e-6]
+    @test TS._resolve_zsave([2e-6, 10e-6], 10e-6) == [2e-6, 10e-6]
+    @test TS._resolve_zsave([1e-6, 10e-6, 20e-6, 40e-6], 40e-6) ==
+          [1e-6, 10e-6, 20e-6, 40e-6]
+
+    # Validation failures.
+    @test_throws ArgumentError TS._resolve_zsave([6e-6, 2e-6], 10e-6)   # unsorted
+    @test_throws ArgumentError TS._resolve_zsave([2e-6, 2e-6], 10e-6)   # duplicate
+    @test_throws ArgumentError TS._resolve_zsave([20e-6], 10e-6)        # > zmax
+    @test_throws ArgumentError TS._resolve_zsave([0.0, 5e-6], 10e-6)    # must be > 0
+end
+
+# -----------------------------------------------------------------------------
+@testset "simulate_delay_point — zsave snapshots (skip_propagation)" begin
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.25e-3, zmask=0.1,
+                                    apod=:supergauss, apod_param=16)
+    setup = TS.build_setup(; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6,
+                             thickness=10e-6, material=:SiO2,
+                             mask_diam=1.0e-3, mask_spacing=0.5e-3,
+                             beam, window,
+                             trange=20e-15, λlims=(200e-9, 400e-9),
+                             R=40e-6, N=32)
+    Nω = length(setup.grid.ω)
+
+    # Explicit thickness list (already ending at zmax): 3 slices.
+    out = TS.simulate_delay_point(setup, 0.0; skip_propagation=true,
+                                   zsave=[2e-6, 6e-6, 10e-6])
+    @test out.zsave == [2e-6, 6e-6, 10e-6]
+    @test size(out.Iω_win) == (Nω, 3)
+    @test size(out.Iω_full) == (Nω, 3)
+
+    # zmax appended automatically when absent.
+    out2 = TS.simulate_delay_point(setup, 0.0; skip_propagation=true,
+                                    zsave=[2e-6, 6e-6])
+    @test out2.zsave == [2e-6, 6e-6, 10e-6]
+    @test size(out2.Iω_win) == (Nω, 3)
+
+    # Integer zsave and the default both reproduce the legacy nz=2 path.
+    out3 = TS.simulate_delay_point(setup, 0.0; skip_propagation=true, zsave=2)
+    @test out3.zsave == [0.0, 10e-6]
+    @test size(out3.Iω_win) == (Nω, 2)
+    out4 = TS.simulate_delay_point(setup, 0.0; skip_propagation=true)
+    @test size(out4.Iω_win) == (Nω, 2)
+end
+
+# -----------------------------------------------------------------------------
 @testset "extract_signal_spectra — multi-window" begin
     # Build a small Gaussian + two-window setup.
     beam = TS.GaussianBeam(8.3e-6, 0.1)
@@ -367,6 +422,16 @@ end
     @test all(out.Iω_win_reimaged .>= 0)
     @test all(isfinite, out.Iω_full)
     @test all(out.Iω_full .>= 0)
+    # Default nz=2 saves the entrance and exit (full-thickness) slices.
+    @test out.zsave ≈ [0.0, setup.grid.zmax]
+
+    # Multi-z snapshots from ONE run: realized z lands exactly on the requested
+    # grid and distinct z give distinct fields (dense-output interpolation, not
+    # stacked copies). This is the core "free intermediate thicknesses" claim.
+    outz = TS.simulate_delay_point(setup, 0.0; zsave=[0.5e-6, 1e-6], init_dz=5e-7)
+    @test outz.zsave ≈ [0.5e-6, 1e-6] atol=1e-15
+    @test size(outz.Iω_win) == (length(setup.grid.ω), 2)
+    @test any(outz.Iω_win[:, 1] .!= outz.Iω_win[:, 2])
 end
 
 # -----------------------------------------------------------------------------
@@ -378,6 +443,7 @@ end
 function _write_mock_scan_file(path; Nω=64, Nt=64, Nτ=8, nz=2,
                                  with_beamlet=true,
                                  with_omega_dep=false,
+                                 zsave=nothing,
                                  ω0=2π * 2.99792458e8 / 260e-9,
                                  dω=1e13, dt=1e-15)
     # Build an FFT-ordered ω vector centred on 0: [0, dω, ..., (N/2-1)dω, -N/2 dω, ..., -dω]
@@ -404,6 +470,9 @@ function _write_mock_scan_file(path; Nω=64, Nt=64, Nτ=8, nz=2,
         if with_beamlet
             g["Iω_beamlet"]  = Iω_fft .* 0.7   # smaller (vignetted)
             g["It_beamlet"]  = It .* 0.7        # beamlet temporal intensity
+        end
+        if !isnothing(zsave)
+            g["zsave"] = collect(Float64, zsave)
         end
         sv = HDF5.create_group(f, "scanvariables")
         sv["τ"] = τ
@@ -464,6 +533,40 @@ end
 
         # Bad window key raises
         @test_throws Exception TS.load_simulated_scan(path; window_key="not_a_key")
+
+        # Back-compat: a file with no /grid/zsave loads fine and omits :zsave.
+        @test !haskey(nt, :zsave)
+    end
+end
+
+# -----------------------------------------------------------------------------
+@testset "load_simulated_scan — multi-z (zsave, :all, z_thickness)" begin
+    mktempdir() do tmpdir
+        path = joinpath(tmpdir, "mock_scan_z.h5")
+        zvec = [1e-6, 10e-6, 20e-6, 40e-6]
+        _write_mock_scan_file(path; Nω=32, Nτ=4, nz=4, zsave=zvec)
+
+        # zsave round-trips; default :end still returns a single 2-D slice.
+        nt = TS.load_simulated_scan(path)
+        @test haskey(nt, :zsave)
+        @test nt.zsave == zvec
+        @test size(nt.trace) == (32, 4)
+
+        # :all returns the full (Nω, nz, Nτ) stack; fftshift only along ω, so
+        # the last slice equals the default :end load.
+        nt_all = TS.load_simulated_scan(path; z_index=:all)
+        @test size(nt_all.trace) == (32, 4, 4)
+        @test nt_all.zsave == zvec
+        @test nt_all.trace[:, end, :] ≈ nt.trace
+
+        # z_thickness selects the nearest saved slice (11 µm → 10 µm = index 2).
+        nt_t = TS.load_simulated_scan(path; z_thickness=11e-6)
+        @test nt_t.trace ≈ nt_all.trace[:, 2, :]
+
+        # z_thickness on a file without /grid/zsave errors.
+        path2 = joinpath(tmpdir, "mock_no_z.h5")
+        _write_mock_scan_file(path2; Nω=32, Nτ=4, nz=2)
+        @test_throws Exception TS.load_simulated_scan(path2; z_thickness=10e-6)
     end
 end
 

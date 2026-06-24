@@ -952,6 +952,45 @@ function extract_signal_spectra(Eωk_out::AbstractArray{<:Complex,4},
 end
 
 """
+    _resolve_zsave(zsave, zmax) -> Vector{Float64}
+
+Resolve the `zsave` propagation-snapshot specification into a validated, sorted
+vector of z positions [m] at which the field is saved during propagation.
+
+- `zsave::Integer` — a uniform grid of `zsave` points over `[0, zmax]`
+  (`range(0, zmax, zsave)`), reproducing the legacy `nz` behaviour exactly
+  (including the entrance slice at `z=0` and the exit slice at `z=zmax`).
+- `zsave::AbstractVector` — explicit material thicknesses [m]. Must be strictly
+  increasing, all `> 0`, and all `<= zmax`. `zmax` is appended if not already
+  present (within `rtol=1e-12`) so the full-thickness ("`:end`") slice always
+  exists.
+
+Because the propagation is a forward-marching integrator with z-independent
+dynamics, the field saved at an intermediate `z` is identical to a dedicated run
+of thickness `z`, so a single `zmax` run yields every shorter thickness for free.
+"""
+function _resolve_zsave(zsave::Integer, zmax::Real)
+    zsave >= 2 || throw(ArgumentError("integer zsave must be ≥ 2, got $zsave"))
+    return collect(range(0.0, zmax, zsave))
+end
+
+function _resolve_zsave(zsave::AbstractVector, zmax::Real)
+    v = collect(Float64, zsave)
+    isempty(v) && throw(ArgumentError("zsave vector must be non-empty"))
+    issorted(v) && allunique(v) ||
+        throw(ArgumentError("zsave must be strictly increasing, got $v"))
+    all(>(0.0), v) ||
+        throw(ArgumentError("all zsave positions must be > 0, got $v"))
+    vmax = maximum(v)
+    vmax <= zmax || throw(ArgumentError(
+        "zsave position $vmax exceeds the propagation distance zmax=$zmax"))
+    if !isapprox(v[end], zmax; rtol=1e-12)
+        push!(v, zmax)
+    end
+    return v
+end
+
+"""
     simulate_delay_point(setup::TGFROGSetup, τi;
                          nz=2, init_dz=5e-7, skip_propagation=false)
         -> NamedTuple
@@ -963,7 +1002,16 @@ spectra per window. The returned `NamedTuple` has, for a single window,
 fields `(Iω_win, Iω_win_reimaged, Iω_full)`. For a vector of windows the
 suffixes recorded in `setup.window_suffix` are appended (e.g. `Iω_win_ωdep`,
 `Iω_win_ωdep_reimaged`), and the single `Iω_full` is shared. All extracted
-arrays have shape `(Nω, nz)`.
+arrays have shape `(Nω, nz)`. The returned NamedTuple also carries `zsave`, the
+vector of realized z save positions [m] (length `nz`) — this is metadata, not a
+per-delay trace, and is excluded from the `scansave` dataset splat by [`run_scan`](@ref).
+
+`zsave` selects the propagation snapshots. Pass an `Integer` for a uniform grid
+of that many points over `[0, zmax]` (default `nz`), or a `Vector` of explicit
+material thicknesses [m] (e.g. `[1e-6, 10e-6, 20e-6, 40e-6]`); `zmax` is appended
+to the vector if absent. Because the field at an intermediate `z` equals a
+dedicated thickness-`z` run, every shorter thickness comes free from one `zmax`
+run. Peak memory scales with `nz` (the in-memory 4-D field is held per slice).
 
 `Iω_full` is the signal beam collected in full: `|E|²` integrated over the
 signal's k-space quadrant only. The propagated field holds the three strong
@@ -982,8 +1030,14 @@ Luna output, exercising every other code path. This is used by the unit
 tests to keep the suite fast and deterministic.
 """
 function simulate_delay_point(setup::TGFROGSetup, τi::Real;
-                              nz::Int=2, init_dz::Float64=5e-7,
+                              nz::Int=2,
+                              zsave::Union{Integer,AbstractVector}=nz,
+                              init_dz::Float64=5e-7,
                               skip_propagation::Bool=false)
+    # --- Resolve the propagation snapshot grid ---------------------------
+    zvec = _resolve_zsave(zsave, setup.grid.zmax)
+    nz_eff = length(zvec)
+
     # --- Build the delayed test beam and coherently superpose ------------
     Eωk_t = apply_delay(setup.Eωk_t_base, setup.grid, τi)
     Eωk_in = setup.Eωk_g1 .+ setup.Eωk_g2 .+ Eωk_t
@@ -992,15 +1046,17 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
     if skip_propagation
         # Fake a (Nω, Nky, Nkx, nz) output by stacking the input nz times.
         Nω, Nky, Nkx = size(Eωk_in)
-        Eωk_out = Array{ComplexF64}(undef, Nω, Nky, Nkx, nz)
-        @inbounds for iz in 1:nz
+        Eωk_out = Array{ComplexF64}(undef, Nω, Nky, Nkx, nz_eff)
+        @inbounds for iz in 1:nz_eff
             Eωk_out[:, :, :, iz] = Eωk_in
         end
+        z_realized = copy(zvec)
     else
-        output = Output.MemoryOutput(0, setup.grid.zmax, nz)
+        output = Output.MemoryOutput(Output.GridCondition(zvec, nz_eff), "Eω", "z")
         Luna.run(Eωk_in, setup.grid, setup.linop, setup.transform, setup.FT,
                   output; init_dz=init_dz)
         Eωk_out = output["Eω"]
+        z_realized = output["z"]
     end
 
     # --- Full signal-beam collection (no aperture crop) ------------------
@@ -1024,7 +1080,7 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
     if setup.window isa AbstractSignalWindow
         Iω_w, Iω_r = extract_signal_spectra(Eωk_out, setup.window_array,
                                               setup.xygrid)
-        return (; Iω_win=Iω_w, Iω_win_reimaged=Iω_r, Iω_full)
+        return (; Iω_win=Iω_w, Iω_win_reimaged=Iω_r, Iω_full, zsave=z_realized)
     else
         pairs_kv = Pair{Symbol,Any}[]
         for (suf, arr) in zip(setup.window_suffix, setup.window_array)
@@ -1033,6 +1089,7 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
             push!(pairs_kv, Symbol("Iω_win" * suf * "_reimaged") => Iω_r)
         end
         push!(pairs_kv, :Iω_full => Iω_full)
+        push!(pairs_kv, :zsave   => z_realized)
         return NamedTuple(pairs_kv)
     end
 end
@@ -1044,7 +1101,7 @@ end
 """
     run_scan(setup, τs;
              scan_name, exec,
-             nz=2, init_dz=5e-7,
+             nz=2, zsave=nz, init_dz=5e-7,
              extra_outputs=(out)->NamedTuple()) -> Nothing
 
 Build a `Luna.Scans.Scan` over the delay array `τs` and run
@@ -1056,18 +1113,39 @@ written once on the first scan point.
 `exec` must be a `Luna.Scans.AbstractExec` instance (e.g.
 `Scans.SlurmExec(...)` or `Scans.LocalExec()`).
 
+`zsave` selects the propagation snapshots saved at every delay (see
+[`simulate_delay_point`](@ref)): an `Integer` gives a uniform grid of that many
+points over `[0, thickness]` (default `nz`), or a `Vector` of explicit material
+thicknesses [m] (e.g. `[1e-6, 10e-6, 20e-6, 40e-6]`). `thickness` is appended to
+the vector if absent so the final slice is always the full-propagation output.
+The trace datasets become `(Nω, nz, Nτ)` and the realized z positions are stored
+once in `/grid/zsave`. Because the field at an intermediate z equals a dedicated
+thickness-z run, every shorter thickness comes free from one full-thickness run;
+note that peak memory scales with the number of z points.
+
 `extra_outputs(output_namedtuple)` — optional escape hatch returning extra
 named tuples to splat into `scansave`. The default is empty.
 """
 function run_scan(setup::TGFROGSetup, τs::AbstractVector;
                   scan_name::AbstractString,
                   exec,
-                  nz::Int=2, init_dz::Float64=5e-7,
+                  nz::Int=2, zsave::Union{Integer,AbstractVector}=nz,
+                  init_dz::Float64=5e-7,
                   extra_outputs::Function=(out)->NamedTuple())
+    # Resolve the z grid up front and persist it once in the metadata. The
+    # resolution is deterministic and saves land exactly on these points, so
+    # /grid/zsave equals the per-point realized `out.zsave`. Use a shallow copy
+    # so the shared `setup.combined_grid` is not mutated.
+    zvec = _resolve_zsave(zsave, setup.grid.zmax)
+    cg = copy(setup.combined_grid)
+    cg["zsave"] = zvec
+
     scan = Scans.Scan(scan_name, exec; τ=τs)
     Luna.runscan(scan) do scanidx, τi
-        out = simulate_delay_point(setup, τi; nz=nz, init_dz=init_dz)
-        Output.scansave(scan, scanidx; grid=setup.combined_grid, out...,
+        out = simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz)
+        # `zsave` is metadata (stored in /grid/zsave), not a per-delay dataset.
+        out_save = Base.structdiff(out, NamedTuple{(:zsave,)})
+        Output.scansave(scan, scanidx; grid=cg, out_save...,
                          extra_outputs(out)...)
     end
     return nothing
@@ -1086,6 +1164,7 @@ end
 #   /grid/Iω_beamlet              input-vignetted beamlet spectrum
 #   /grid/It_beamlet, /grid/Ito_beamlet   beamlet temporal intensity (+ oversampled)
 #   /grid/window, /grid/window_ωdep   precomputed signal mask(s)
+#   /grid/zsave                   (nz,) realized propagation z positions [m]
 #   /Iω_win                       (Nω, nz, Nτ) integrated FROG trace
 #   /Iω_win_reimaged              (Nω, nz, Nτ) on-axis re-imaged trace
 #   /Iω_full                      (Nω, nz, Nτ) full signal-beam collection (signal quadrant)
@@ -1096,13 +1175,13 @@ end
 # ready for inspection, plotting, or downstream processing.
 
 """
-    load_simulated_scan(filename; window_key="Iω_win", z_index=:end)
-        -> NamedTuple
+    load_simulated_scan(filename; window_key="Iω_win", z_index=:end,
+                        z_thickness=nothing) -> NamedTuple
 
 Read the raw HDF5 file produced by [`run_scan`](@ref) and return its
 contents as a NamedTuple, with all ω-dependent arrays fftshifted into
-natural (centred) order and the chosen z slice extracted from the propagated
-trace.
+natural (centred) order and the requested z slice(s) extracted from the
+propagated trace.
 
 # Arguments
 - `filename`: path to the `<scan_name>_collected.h5` file.
@@ -1115,8 +1194,12 @@ trace.
     * `"Iω_win_ωdep"` — ω-dependent window (Gaussian two-window setup)
     * `"Iω_win_ωdep_reimaged"` — ω-dependent re-imaged
 - `z_index=:end`: which propagation z slice to use; the default `:end`
-  picks the final (output of full propagation) slice. Pass an `Int` for
-  any specific slice.
+  picks the final (full-propagation) slice. Pass an `Int` for a specific
+  slice index, or `:all` to return *every* z slice as a `(Nω, nz, Nτ)`
+  stack (the equivalent of the trace at every saved material thickness).
+- `z_thickness=nothing`: select the slice whose saved z position [m] is
+  nearest this material thickness. Requires `/grid/zsave` in the file
+  (written by recent `run_scan` runs); takes precedence over `z_index`.
 
 # Returned NamedTuple
 
@@ -1126,7 +1209,8 @@ trace.
 | `ω0`          | scalar         | carrier angular frequency [rad/s] (from `/grid/ω0`)  |
 | `t`           | `(Nt,)`        | time grid [s]                                        |
 | `τ`           | `(Nτ,)`        | scan-variable delay grid [s]                         |
-| `trace`       | `(Nω, Nτ)`     | FROG trace, natural ω order, from `window_key`/`z_index` |
+| `trace`       | `(Nω, Nτ)` or `(Nω, nz, Nτ)` | FROG trace, natural ω order; 3-D when `z_index=:all` |
+| `zsave`       | `(nz,)`        | realized propagation z positions [m] (when `/grid/zsave` present) |
 | `Iω`          | `(Nω,)`        | reference pulse spectrum, natural ω order            |
 | `It`          | `(Nt,)`        | reference pulse temporal intensity                   |
 | `τfwhm`       | scalar         | input pulse FWHM [s]                                 |
@@ -1142,7 +1226,8 @@ reference with `window_key="Iω_full"`.
 """
 function load_simulated_scan(filename::AbstractString;
                               window_key::AbstractString="Iω_win",
-                              z_index=:end)
+                              z_index=:end,
+                              z_thickness::Union{Nothing,Real}=nothing)
     HDF5.h5open(filename, "r") do f
         # --- Grid block ---
         haskey(f, "grid") || error("$filename: missing /grid group (not a scansave file?)")
@@ -1158,6 +1243,7 @@ function load_simulated_scan(filename::AbstractString;
         Ito_beam_raw= haskey(g, "Ito_beamlet") ? read(g["Ito_beamlet"]) : nothing
         To_raw      = haskey(g, "To")  ? read(g["To"])  : nothing
         Ito_raw     = haskey(g, "Ito") ? read(g["Ito"]) : nothing
+        zsave       = haskey(g, "zsave") ? read(g["zsave"]) : nothing
 
         # --- Scan variable ---
         haskey(f, "scanvariables") && haskey(f["scanvariables"], "τ") ||
@@ -1173,19 +1259,31 @@ function load_simulated_scan(filename::AbstractString;
         end
         win_full = read(f[window_key])    # shape (Nω, nz, Nτ)
         nz = size(win_full, 2)
-        z_idx = z_index === :end ? nz : Int(z_index)
-        (1 <= z_idx <= nz) ||
-            error("$filename: z_index=$z_idx out of range (nz=$nz)")
-        win = win_full[:, z_idx, :]       # shape (Nω, Nτ)
 
-        # --- Apply fftshift along the ω axis ---
+        # --- Select z slice(s): z_thickness > z_index ---
+        if z_thickness !== nothing
+            isnothing(zsave) && error("$filename: z_thickness requested but the " *
+                "file has no /grid/zsave (run produced with an older run_scan)")
+            z_idx = argmin(abs.(zsave .- z_thickness))
+            win = win_full[:, z_idx, :]                  # (Nω, Nτ)
+        elseif z_index === :all
+            win = win_full                               # (Nω, nz, Nτ)
+        else
+            z_idx = z_index === :end ? nz : Int(z_index)
+            (1 <= z_idx <= nz) ||
+                error("$filename: z_index=$z_idx out of range (nz=$nz)")
+            win = win_full[:, z_idx, :]                  # (Nω, Nτ)
+        end
+
+        # --- Apply fftshift along the ω axis (dim 1) ---
         ω           = FFTW.fftshift(ω_raw)
         Iω          = FFTW.fftshift(Iω_raw)
         trace       = FFTW.fftshift(win, 1)
         Iω_beamlet  = isnothing(Iω_beam_raw) ? nothing : FFTW.fftshift(Iω_beam_raw)
 
         nt = (; ω, ω0, t, τ, trace, Iω, It, τfwhm)
-        nt = isnothing(Iω_beamlet) ? nt : merge(nt, (; Iω_beamlet))
+        nt = isnothing(zsave)       ? nt : merge(nt, (; zsave))
+        nt = isnothing(Iω_beamlet)  ? nt : merge(nt, (; Iω_beamlet))
         nt = isnothing(It_beam_raw) ? nt : merge(nt, (; It_beamlet=It_beam_raw))
         nt = isnothing(Ito_beam_raw) ? nt : merge(nt, (; Ito_beamlet=Ito_beam_raw))
         isnothing(To_raw) ? nt : merge(nt, (; To=To_raw, Ito=Ito_raw))
