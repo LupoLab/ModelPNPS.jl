@@ -772,6 +772,7 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
                        λlims  = (160e-9, 500e-9),
                        R = nothing, N = nothing,
                        apod::Symbol = :supergauss, apod_param = nothing,
+                       GDD = 0.0, TOD = 0.0,
                        optimal_grid_kwargs = (;),
                        extra_grid_metadata = Dict{String,Any}())
 
@@ -789,7 +790,7 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     # --- Material dispersion + Kerr nonlinearity --------------------------
     χ3 = PhysData.χ3(material)
     responses = (Nonlinear.Kerr_env(χ3),)
-    nfun = PhysData.ref_index_fun(material)
+    nfun = PhysData.ref_index_fun(material, lookup=false)
     nfunreal = (λ) -> real(nfun(λ))
     linop = LinearOps.make_const_linop(grid, xygrid, nfunreal)
     normfun = NonlinearRHS.const_norm_free(grid, xygrid, nfunreal)
@@ -799,7 +800,8 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
 
     # --- 1-D reference spectrum (used by the HE₁₁ builder and as diagnostic)
     FT1d = plan_fft(copy(grid.t))
-    Eω = Fields.GaussField(; λ0=λ0, τfwhm=τfwhm, energy=energy)(grid, FT1d)
+    ϕ = [0.0, 0.0, GDD, TOD]  # up to 3rd order
+    Eω = Fields.GaussField(; λ0=λ0, τfwhm=τfwhm, energy=energy, ϕ=ϕ)(grid, FT1d)
 
     # --- Build three input beamlets ---------------------------------------
     geom = (; mask_diam, mask_spacing, f_foc=beam.f_foc, λ0, τfwhm)
@@ -996,7 +998,8 @@ end
 
 """
     simulate_delay_point(setup::TGFROGSetup, τi;
-                         nz=2, init_dz=5e-7, skip_propagation=false)
+                         nz=2, init_dz=5e-7, filename=nothing,
+                         skip_propagation=false)
         -> NamedTuple
 
 Run the full per-delay computation: apply delay `τi` to the test beam,
@@ -1029,6 +1032,12 @@ trace can be corrected for collection vignetting exactly rather than via a
 power-law approximation. (This assumes the boxcar beams are well separated, so
 pump tails leaking into the signal quadrant are negligible vs. the signal.)
 
+Pass `filename` to persist the propagation to disk: the `Luna.run` then writes
+to an `Output.HDF5Output` at that path instead of an in-memory
+`Output.MemoryOutput`. Downstream extraction is identical either way (both
+outputs index as `output["Eω"]`/`output["z"]`); `filename` is ignored when
+`skip_propagation=true`.
+
 Setting `skip_propagation=true` substitutes the input field for the
 Luna output, exercising every other code path. This is used by the unit
 tests to keep the suite fast and deterministic.
@@ -1037,6 +1046,7 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
                               nz::Int=2,
                               zsave::Union{Integer,AbstractVector}=nz,
                               init_dz::Float64=5e-7,
+                              filename::Union{Nothing,AbstractString}=nothing,
                               skip_propagation::Bool=false)
     # --- Resolve the propagation snapshot grid ---------------------------
     zvec = _resolve_zsave(zsave, setup.grid.zmax)
@@ -1056,7 +1066,10 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
         end
         z_realized = copy(zvec)
     else
-        output = Output.MemoryOutput(Output.GridCondition(zvec, nz_eff), "Eω", "z")
+        save_cond = Output.GridCondition(zvec, nz_eff)
+        output = isnothing(filename) ?
+            Output.MemoryOutput(save_cond, "Eω", "z") :
+            Output.HDF5Output(filename, save_cond, "Eω", "z", Output.nostats, false)
         Luna.run(Eωk_in, setup.grid, setup.linop, setup.transform, setup.FT,
                   output; init_dz=init_dz)
         Eωk_out = output["Eω"]
