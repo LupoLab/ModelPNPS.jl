@@ -31,17 +31,17 @@ Luna.set_fftw_mode(:estimate)
 
 # --- Pulse / substrate parameters (identical to the mask example) ------------
 λ0           = 260e-9
-τfwhm        = 2.0e-15
+τfwhm        = 1.0e-15
 energy       = 0.2e-6
 material     = :SiO2
-thickness    = 10e-6
+thickness    = 40e-6
 
 # --- Optical / mask geometry (identical to the mask example) -----------------
 a            = 125e-6
 f_coll       = 5.0
 f_foc        = 0.1
 mask_diam    = 1.0e-3
-mask_spacing = 0.5e-3
+mask_spacing = 2.0e-3
 
 # --- Gaussian beam waist & crossing geometry derived from mask parameters ---
 # w0 = Airy disc radius from a single mask hole through the focusing lens:
@@ -72,6 +72,6 @@ setup = TS.build_setup(; λ0, τfwhm, energy, thickness, material,
 τ = collect(range(-10e-15, 10e-15, 80))
 exec = Scans.SlurmExec(@__FILE__, length(τ); memory="18G", arraymode=:batch)
 
-scan_name = "tgfrog_260nm_2fs_FTL_gaussian_SiO2_10um_1.5mmCtC_1mmHole"
+scan_name = "tgfrog_260nm_1fs_FTL_gaussian_SiO2_40um_2.0mmCtC_1mmHole"
 
 TS.run_scan(setup, τ; scan_name, exec, nz=2, init_dz=5e-7)

@@ -439,6 +439,25 @@ end
     @test outz.zsave ≈ [0.5e-6, 1e-6] atol=1e-15
     @test size(outz.Iω_win) == (length(setup.grid.ω), 2)
     @test any(outz.Iω_win[:, 1] .!= outz.Iω_win[:, 2])
+
+    # `filename` swaps the in-memory MemoryOutput for an HDF5Output. The
+    # extracted spectra must be identical to the in-memory run, and the file
+    # must hold the raw Eω/z propagation datasets.
+    mktempdir() do dir
+        fpath = joinpath(dir, "delay.h5")
+        outf = TS.simulate_delay_point(setup, 0.0; nz=2, init_dz=5e-7,
+                                        filename=fpath)
+        @test isfile(fpath)
+        @test outf.Iω_win == out.Iω_win
+        @test outf.Iω_full == out.Iω_full
+        @test outf.zsave == out.zsave
+        HDF5.h5open(fpath, "r") do f
+            @test haskey(f, "Eω")
+            @test haskey(f, "z")
+            @test read(f["z"]) ≈ out.zsave
+            @test size(read(f["Eω"]))[end] == length(out.zsave)
+        end
+    end
 end
 
 # -----------------------------------------------------------------------------
