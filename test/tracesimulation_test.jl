@@ -596,4 +596,111 @@ end
     end
 end
 
+# -----------------------------------------------------------------------------
+@testset "FrozenRamanPolarEnv matches Luna's RamanPolarEnv" begin
+    grid  = Grid.EnvGrid(10e-6, 260e-9, (200e-9, 400e-9), 20e-15)
+    scale = 0.18 * PhysData.ε_0 * PhysData.χ3(:SiO2)
+    Rluna = Luna.Nonlinear.RamanPolarEnv(
+        grid.to, Luna.Raman.raman_response(grid.to, :SiO2, scale))
+    Rfroz = TS.FrozenRamanPolarEnv(
+        grid.to, Luna.Raman.raman_response(grid.to, :SiO2, scale))
+
+    # Realistic field amplitude (V/m): with O(1) fields the polarisation
+    # ~ ε₀χ³|E|²E ≈ 1e-34 sits below the ulp of any O(1) accumulation buffer
+    # and the additivity check would be vacuous.
+    rng = MersenneTwister(7)
+    Et  = 1e12 .* randn(rng, ComplexF64, length(grid.to))
+
+    P1 = zeros(ComplexF64, length(grid.to))
+    P2 = zeros(ComplexF64, length(grid.to))
+    Rluna(P1, Et, 1.0)
+    Rfroz(P2, Et, 1.0)
+    @test maximum(abs, P1) > 0          # response not trivially zero
+    @test P1 ≈ P2 rtol=1e-13
+
+    # Accumulation semantics: the response must ADD to a nonzero buffer.
+    seed = maximum(abs, P1)
+    outa = fill(complex(seed), length(grid.to))
+    Rfroz(outa, Et, 1.0)
+    @test outa .- seed ≈ P2 rtol=1e-8   # looser: cancellation in the subtraction
+
+    # Column-matrix branch (N, 1), as used by scalar modal paths.
+    Etm   = reshape(Et, :, 1)
+    out1m = zeros(ComplexF64, size(Etm))
+    out2m = zeros(ComplexF64, size(Etm))
+    Rluna(out1m, Etm, 1.0)
+    Rfroz(out2m, Etm, 1.0)
+    @test out1m ≈ out2m rtol=1e-13
+
+    # Second call with fresh data: buffers are reused, kernel stays frozen.
+    Et2 = 1e12 .* randn(rng, ComplexF64, length(grid.to))
+    fill!(P1, 0); fill!(P2, 0)
+    Rluna(P1, Et2, 1.0)
+    Rfroz(P2, Et2, 1.0)
+    @test P1 ≈ P2 rtol=1e-13
+end
+
+# -----------------------------------------------------------------------------
+@testset "build_setup raman keyword" begin
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.25e-3, zmask=0.1,
+                                    apod=:supergauss, apod_param=16)
+    kwargs = (; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6,
+                thickness=10e-6, material=:SiO2,
+                mask_diam=1.0e-3, mask_spacing=0.5e-3,
+                beam, window,
+                trange=20e-15, λlims=(200e-9, 400e-9),
+                R=40e-6, N=32)
+
+    # Default: Raman off, recorded as such in the metadata.
+    setup0 = TS.build_setup(; kwargs...)
+    @test setup0.combined_grid["raman"] == 0
+
+    # Raman on: builds cleanly and records the model in the metadata.
+    setup1 = TS.build_setup(; kwargs..., raman=true, raman_fraction=0.2)
+    @test setup1.combined_grid["raman"] == 1
+    @test setup1.combined_grid["raman_fraction"] == 0.2
+
+    # Fake-propagation signal extraction still works with the Raman setup —
+    # a smoke check that the two-response pipeline is wired through.
+    out = TS.simulate_delay_point(setup1, 0.0; skip_propagation=true, nz=2)
+    @test all(isfinite, out.Iω_win)
+
+    # Materials without a condensed-phase (:intermediate) Raman model raise.
+    @test_throws ErrorException TS.build_setup(; kwargs..., material=:N2,
+                                                 raman=true)
+end
+
+# -----------------------------------------------------------------------------
+@testset "Raman split: quasi-static limit recovers the Kerr-only response" begin
+    # The defining property of the envelope-defined f_R (prop_gnlse
+    # convention): for a pulse much longer than the Raman memory,
+    # h_R ⊛ |E|² → |E|², so Kerr((1-f_R)χ³) + Raman must equal Kerr(χ³).
+    # This pins the relative Kerr/Raman normalisation — with the (3/2)-less
+    # scale of Luna's low-level examples the totals differ by ~6%, well
+    # outside the tolerance below.
+    grid = Grid.EnvGrid(10e-6, 260e-9, (255e-9, 265e-9), 20e-12)
+    fr   = 0.18
+    χ3   = PhysData.χ3(:SiO2)
+
+    K_full  = Luna.Nonlinear.Kerr_env(χ3)
+    K_part  = Luna.Nonlinear.Kerr_env((1 - fr) * χ3)
+    R_part  = TS.FrozenRamanPolarEnv(
+        grid.to, Luna.Raman.raman_response(grid.to, :SiO2,
+                                           1.5 * fr * PhysData.ε_0 * χ3))
+
+    # 5 ps FWHM Gaussian envelope: ~50x the Raman memory.
+    Et = ComplexF64.(1e12 .* exp.(-2 * log(2) .* (grid.to ./ 5e-12) .^ 2))
+
+    P_full = zeros(ComplexF64, length(grid.to))
+    K_full(P_full, Et, 1.0)
+    P_split = zeros(ComplexF64, length(grid.to))
+    K_part(P_split, Et, 1.0)
+    R_part(P_split, Et, 1.0)
+
+    @test P_split ≈ P_full rtol=2e-2
+    @test isapprox(maximum(abs, P_split), maximum(abs, P_full); rtol=1e-2)
+end
+
 end # @testset "Trace simulation"

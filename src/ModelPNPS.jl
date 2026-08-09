@@ -90,11 +90,12 @@ module ModelPNPS
 
 import Luna
 import Luna: Capillary, Fields, Grid, LinearOps, Maths, Nonlinear, NonlinearRHS,
-             Output, PhysData, Scans
+             Output, PhysData, Raman, Scans
 import Luna.Capillary: besselj
 import FFTW
 import FFTW: fft, ifft, plan_fft
 import HDF5
+import LinearAlgebra: mul!
 import Statistics: mean
 
 export AbstractInputBeam, HE11Beam, GaussianBeam,
@@ -711,6 +712,66 @@ function build_beamlets(beam::GaussianBeam, grid::Grid.EnvGrid,
 end
 
 # ============================================================================
+# Delayed (Raman) nonlinear response
+# ============================================================================
+
+"""
+    FrozenRamanPolarEnv(t, r)
+
+Envelope Raman polarisation response with a *frozen* response kernel.
+
+Wraps `Luna.Nonlinear.RamanPolarEnv`, precomputing the frequency-domain
+response function `hω` once at construction (at unit density). Luna's own
+response recomputes the time-domain kernel and its FFT on *every* call, which
+is negligible for modal simulations (one call per step) but dominant for
+free-space grids, where the response runs once per transverse point — ~10⁶
+calls per RK stage on a 1024² grid, each re-evaluating the 13-mode
+Hollenbeck–Cantrell sum over the doubled time grid. Freezing is exact here:
+the density is constant (`densityfun = z -> 1`) and the `:intermediate`
+response ignores its density argument entirely.
+
+The per-call convolution below reproduces `Luna.Nonlinear.(::RamanPolar)`
+line for line, minus the kernel update and with preallocated plan
+applications; the test suite verifies agreement with Luna's response to
+machine precision, which guards against drift in Luna's internals.
+"""
+struct FrozenRamanPolarEnv{TR, TI}
+    R::TR    # wrapped Luna response: buffers, FFT plan, frozen hω
+    IFT::TI  # cached inverse plan, so no per-call allocation
+end
+
+function FrozenRamanPolarEnv(t::AbstractVector, r)
+    R = Nonlinear.RamanPolarEnv(t, r)
+    R.r(R.ht, 1.0)       # kernel at unit density — never changes
+    R.hω .= R.FT * R.h
+    return FrozenRamanPolarEnv(R, inv(R.FT))
+end
+
+function (F::FrozenRamanPolarEnv)(out, Et, ρ)
+    R = F.R
+    n = size(Et, 1)
+    if ndims(Et) > 1
+        size(Et, 2) == 1 || error("vector Raman not implemented")
+        E = reshape(Et, n)
+    else
+        E = Et
+    end
+    Nonlinear.sqr!(R, E)               # R.E2v .= |E|²/2 (first half; rest 0)
+    mul!(R.Eω2, R.FT, R.E2)
+    @. R.Pω = R.hω * R.Eω2 * R.dt      # convolution on the doubled grid
+    mul!(R.P, F.IFT, R.Pω)
+    @inbounds for i in 1:length(E)
+        R.Pout[i] = ρ * E[i] * R.P[i]
+    end
+    if ndims(Et) > 1
+        out .+= reshape(R.Pout, size(Et))
+    else
+        out .+= R.Pout
+    end
+    return nothing
+end
+
+# ============================================================================
 # Top-level constructor
 # ============================================================================
 
@@ -759,6 +820,24 @@ The defaults reproduce the master script
                                     via [`optimal_spatial_grid`](@ref)
 - `apod, apod_param`              — apodisation for the *input-beamlet*
                                     masks (only relevant for `HE11Beam`)
+- `GDD = 0.0`, `TOD = 0.0`        — group-delay and third-order dispersion
+                                    [s², s³] applied to the input pulse
+- `raman = false`                 — include the delayed (Raman) part of the
+                                    nonlinear response via
+                                    [`FrozenRamanPolarEnv`](@ref); requires a
+                                    material with an `:intermediate` Raman
+                                    model in `Luna.PhysData.raman_parameters`
+                                    (for `:SiO2` the multimode
+                                    Hollenbeck–Cantrell response). The total
+                                    polarisation is
+                                    `(3/4)ε₀χ³[(1-f_R)|E|²E + f_R E(h_R⊛|E|²)]`
+                                    — equal prefactors on both terms, the
+                                    envelope-defined `f_R` convention of
+                                    Luna's `prop_gnlse`, so the quasi-static
+                                    limit reproduces the Kerr-only response
+                                    exactly
+- `raman_fraction = 0.18`         — envelope-defined nuclear fraction `f_R`
+                                    of χ³ (the Blow–Wood silica value)
 - `optimal_grid_kwargs`           — extra kwargs forwarded to
                                     `optimal_spatial_grid`
 - `extra_grid_metadata`           — additional entries merged into the
@@ -773,6 +852,7 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
                        R = nothing, N = nothing,
                        apod::Symbol = :supergauss, apod_param = nothing,
                        GDD = 0.0, TOD = 0.0,
+                       raman::Bool = false, raman_fraction::Float64 = 0.18,
                        optimal_grid_kwargs = (;),
                        extra_grid_metadata = Dict{String,Any}())
 
@@ -787,9 +867,36 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     grid = Grid.EnvGrid(thickness, λ0, λlims, trange)
     xygrid = Grid.FreeGrid(R, N)
 
-    # --- Material dispersion + Kerr nonlinearity --------------------------
+    # --- Material dispersion + Kerr (+ optional Raman) nonlinearity -------
     χ3 = PhysData.χ3(material)
-    responses = (Nonlinear.Kerr_env(χ3),)
+    if raman
+        # Split χ³ into an instantaneous electronic part and a delayed
+        # nuclear part carrying the envelope-defined fraction
+        # `raman_fraction` (the Blow–Wood f_R = 0.18 for silica), following
+        # the convention of Luna's `prop_gnlse`: both terms must end with
+        # the SAME prefactor, so that the quasi-static (long-pulse) limit of
+        # the split response is identical to the Kerr-only response.
+        # `Kerr_env` applies the envelope factor 3/4 internally while the
+        # Raman response's `sqr!` applies 1/2, so the Raman `scale` carries
+        # the compensating (3/4)/(1/2) = 3/2 (and the explicit ε₀, which
+        # `Kerr_env` adds internally):
+        #     P = (3/4) ε₀ χ³ [ (1-f_R) |E|²E + f_R E (h_R ⊛ |E|²) ].
+        # (Luna's low-level silica envelope examples omit the 3/2 and thus
+        # under-weight Raman by 2/3 relative to this convention.) The
+        # equal-prefactor property is enforced by the quasi-static
+        # consistency test in the test suite.
+        rp = PhysData.raman_parameters(material)
+        rp.kind == :intermediate ||
+            error("raman=true supports materials with an :intermediate " *
+                  "(condensed-phase) Raman model, e.g. :SiO2; " *
+                  "$material has kind :$(rp.kind)")
+        rr = Raman.raman_response(grid.to, material,
+                                  1.5 * raman_fraction * PhysData.ε_0 * χ3)
+        responses = (Nonlinear.Kerr_env((1 - raman_fraction) * χ3),
+                     FrozenRamanPolarEnv(grid.to, rr))
+    else
+        responses = (Nonlinear.Kerr_env(χ3),)
+    end
     nfun = PhysData.ref_index_fun(material, lookup=false)
     nfunreal = (λ) -> real(nfun(λ))
     linop = LinearOps.make_const_linop(grid, xygrid, nfunreal)
@@ -813,6 +920,12 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     window_array, window_suffix = _build_window_set(window, grid, xygrid; λ0=λ0)
 
     # --- Assemble combined_grid metadata ----------------------------------
+    # Record the nonlinearity model alongside the grids (explicit entries win
+    # over these defaults if the caller supplies their own).
+    extra_grid_metadata = merge(Dict{String,Any}(
+                                    "raman" => raman ? 1 : 0,
+                                    "raman_fraction" => raman_fraction),
+                                extra_grid_metadata)
     combined_grid = _combined_grid(grid, xygrid, beam_meta,
                                     window, window_array, window_suffix,
                                     Eω, λ0, τfwhm, material, thickness,
