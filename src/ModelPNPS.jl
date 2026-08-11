@@ -1427,6 +1427,7 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
                   norm=Luna.RK45.weaknorm,
                   norm_builder::Union{Nothing,Function}=nothing,
                   fftw_threads::Int=0,
+                  fftw_mode::Symbol=:estimate,
                   stream::Bool=true,
                   extra_outputs::Function=(out)->NamedTuple())
     scan = Scans.Scan(scan_name, exec; τ=τs)
@@ -1450,6 +1451,13 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
             # `procs` workers sharing `cpus` cores, pass
             # `fftw_threads = cpus ÷ procs`.
             fftw_threads > 0 && Luna.set_fftw_threads(fftw_threads)
+            # Same worker-visibility problem as the threads: a top-level
+            # `set_fftw_mode` in the script never reaches `procs` workers,
+            # whose planning would then use Luna's default — MEASURE-class
+            # planning of production-size 3D transforms takes tens of minutes
+            # per worker. :estimate plans in seconds and is what every
+            # ModelPNPS production script uses.
+            Luna.set_fftw_mode(fftw_mode)
             setup = setup_fn()::TGFROGSetup
             zvec = _resolve_zsave(zsave, setup.grid.zmax)
             # `norm_builder` exists because a setup-derived norm (e.g.
