@@ -1110,8 +1110,26 @@ function _resolve_zsave(zsave::AbstractVector, zmax::Real)
 end
 
 """
+    delayed_input(setup, τ) -> Array{ComplexF64,3}
+
+Coherent input field for scan delay `τ`, in the paper's **gate-delay
+convention**: the stored trace ``T(ω, τ)`` has the GATE pair delayed by `+τ`
+relative to the probe. Physically the probe arm carries the delay stage, so
+the probe is delayed by `-τ`, which equals gating at `+τ` up to a global time
+shift that the time-integrating measurement cannot see. The same-τ gate pair
+stays untouched, so the smearing structure (same-τ gate pair; paper
+Appendix A.2) is preserved. Files written with this convention carry
+`/grid/delay_convention = "gate"` and need NO delay-axis reversal on loading
+(croak's `reverse_trace` auto-detects; legacy marker-less files are reversed
+as before).
+"""
+delayed_input(setup::TGFROGSetup, τ::Real) =
+    setup.Eωk_g1 .+ setup.Eωk_g2 .+ apply_delay(setup.Eωk_t_base, setup.grid, -τ)
+
+"""
     simulate_delay_point(setup::TGFROGSetup, τi;
-                         nz=2, init_dz=5e-7, filename=nothing,
+                         nz=2, init_dz=5e-7, rtol=1e-6, max_dz=0.0,
+                         filename=nothing,
                          skip_propagation=false)
         -> NamedTuple
 
@@ -1159,6 +1177,8 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
                               nz::Int=2,
                               zsave::Union{Integer,AbstractVector}=nz,
                               init_dz::Float64=5e-7,
+                              rtol::Float64=1e-6,
+                              max_dz::Float64=0.0,
                               filename::Union{Nothing,AbstractString}=nothing,
                               skip_propagation::Bool=false)
     # --- Resolve the propagation snapshot grid ---------------------------
@@ -1166,8 +1186,7 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
     nz_eff = length(zvec)
 
     # --- Build the delayed test beam and coherently superpose ------------
-    Eωk_t = apply_delay(setup.Eωk_t_base, setup.grid, τi)
-    Eωk_in = setup.Eωk_g1 .+ setup.Eωk_g2 .+ Eωk_t
+    Eωk_in = delayed_input(setup, τi)
 
     # --- Propagate (or fake the propagation for tests) -------------------
     if skip_propagation
@@ -1183,8 +1202,19 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
         output = isnothing(filename) ?
             Output.MemoryOutput(save_cond, "Eω", "z") :
             Output.HDF5Output(filename, save_cond, "Eω", "z", Output.nostats, false)
+        # NOTE the solver tolerance: the RK45 error is controlled relative to
+        # the FULL field, which the pump beamlets dominate. The FWM signal is
+        # orders of magnitude weaker (signal/pump field ratio ∝ pulse energy),
+        # so its RELATIVE accuracy is ~(pump/signal) × rtol and degrades with
+        # propagation distance and with decreasing energy. At the defaults
+        # (rtol = 1e-6, max_dz = zmax/2, 0.1 µJ) the collected signal spectrum
+        # carries ~1% (mid-slab) to ~10% (40 µm) solver-dependent error —
+        # measured in FROG_paper_new/90_solver_accuracy_test.jl. Tighten to
+        # rtol ≤ 1e-8 and a µm-scale max_dz for quantitative small-effect
+        # studies (Raman A/B, low-energy runs, residual-floor analyses).
         Luna.run(Eωk_in, setup.grid, setup.linop, setup.transform, setup.FT,
-                  output; init_dz=init_dz)
+                  output; init_dz=init_dz, rtol=rtol,
+                  max_dz=(max_dz > 0 ? max_dz : setup.grid.zmax/2))
         Eωk_out = output["Eω"]
         z_realized = output["z"]
     end
@@ -1231,7 +1261,7 @@ end
 """
     run_scan(setup, τs;
              scan_name, exec,
-             nz=2, zsave=nz, init_dz=5e-7,
+             nz=2, zsave=nz, init_dz=5e-7, rtol=1e-6, max_dz=0.0,
              extra_outputs=(out)->NamedTuple()) -> Nothing
 
 Build a `Luna.Scans.Scan` over the delay array `τs` and run
@@ -1261,6 +1291,8 @@ function run_scan(setup::TGFROGSetup, τs::AbstractVector;
                   exec,
                   nz::Int=2, zsave::Union{Integer,AbstractVector}=nz,
                   init_dz::Float64=5e-7,
+                  rtol::Float64=1e-6,
+                  max_dz::Float64=0.0,
                   extra_outputs::Function=(out)->NamedTuple())
     # Resolve the z grid up front and persist it once in the metadata. The
     # resolution is deterministic and saves land exactly on these points, so
@@ -1269,10 +1301,17 @@ function run_scan(setup::TGFROGSetup, τs::AbstractVector;
     zvec = _resolve_zsave(zsave, setup.grid.zmax)
     cg = copy(setup.combined_grid)
     cg["zsave"] = zvec
+    # Solver-accuracy provenance: record what the traces were integrated with.
+    cg["rtol"] = rtol
+    cg["max_dz"] = max_dz > 0 ? max_dz : setup.grid.zmax/2
+    # Delay-convention marker: traces are stored in the paper's gate-delay
+    # frame (see simulate_delay_point); loaders must not reverse the axis.
+    cg["delay_convention"] = "gate"
 
     scan = Scans.Scan(scan_name, exec; τ=τs)
     Luna.runscan(scan) do scanidx, τi
-        out = simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz)
+        out = simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz,
+                                     rtol=rtol, max_dz=max_dz)
         # `zsave` is metadata (stored in /grid/zsave), not a per-delay dataset.
         out_save = Base.structdiff(out, NamedTuple{(:zsave,)})
         Output.scansave(scan, scanidx; grid=cg, out_save...,

@@ -703,4 +703,28 @@ end
     @test isapprox(maximum(abs, P_split), maximum(abs, P_full); rtol=1e-2)
 end
 
+# -----------------------------------------------------------------------------
+@testset "delay convention: gate frame (probe delayed by -tau)" begin
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.25e-3, zmask=0.1,
+                                    apod=:supergauss, apod_param=16)
+    setup = TS.build_setup(; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6,
+                             thickness=10e-6, material=:SiO2,
+                             mask_diam=1.0e-3, mask_spacing=0.5e-3,
+                             beam, window,
+                             trange=20e-15, λlims=(200e-9, 400e-9),
+                             R=40e-6, N=32)
+    τ = 1.5e-15
+    # The scan input must carry the probe at -τ (gate-delay/paper convention).
+    got = TS.delayed_input(setup, τ)
+    @test got ≈ setup.Eωk_g1 .+ setup.Eωk_g2 .+
+                TS.apply_delay(setup.Eωk_t_base, setup.grid, -τ)
+    @test !(got ≈ setup.Eωk_g1 .+ setup.Eωk_g2 .+
+                  TS.apply_delay(setup.Eωk_t_base, setup.grid, τ))
+    # τ = 0 is the identity for both conventions.
+    @test TS.delayed_input(setup, 0.0) ≈
+          setup.Eωk_g1 .+ setup.Eωk_g2 .+ setup.Eωk_t_base
+end
+
 end # @testset "Trace simulation"
