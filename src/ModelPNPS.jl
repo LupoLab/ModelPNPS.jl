@@ -1426,6 +1426,7 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
                   max_dz::Float64=0.0,
                   norm=Luna.RK45.weaknorm,
                   norm_builder::Union{Nothing,Function}=nothing,
+                  fftw_threads::Int=0,
                   stream::Bool=true,
                   extra_outputs::Function=(out)->NamedTuple())
     scan = Scans.Scan(scan_name, exec; τ=τs)
@@ -1442,6 +1443,13 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
     normx = nothing
     Luna.runscan(scan) do scanidx, τi
         if setup === nothing
+            # Per-process FFTW threading, applied exactly where the plans are
+            # created. In `procs` (multi-worker) scans the workers never
+            # execute the script's top level, so a top-level
+            # `set_fftw_threads` call does not reach them — this does. With
+            # `procs` workers sharing `cpus` cores, pass
+            # `fftw_threads = cpus ÷ procs`.
+            fftw_threads > 0 && Luna.set_fftw_threads(fftw_threads)
             setup = setup_fn()::TGFROGSetup
             zvec = _resolve_zsave(zsave, setup.grid.zmax)
             # `norm_builder` exists because a setup-derived norm (e.g.
@@ -1481,6 +1489,28 @@ end
 setup exists anyway, e.g. in interactive use or LocalExec runs)."""
 run_scan(setup::TGFROGSetup, τs::AbstractVector; kwargs...) =
     run_scan(() -> setup, τs; kwargs...)
+
+"""
+    run_scan(setup_args::NamedTuple, τs; kwargs...)
+
+RECOMMENDED for scan scripts: pass the [`build_setup`](@ref) keyword
+arguments as a NamedTuple, e.g.
+
+    setup_args = (; λ0, τfwhm, energy, thickness, material,
+                    mask_diam, mask_spacing, λlims, beam, window,
+                    R=366.0e-6, N=1024)
+    run_scan(setup_args, τ; ...)
+
+The setup is then built lazily on each process that executes scan points.
+This form is robust under EVERY execution mode, including multi-worker
+(`procs > 0`) queue scans: a NamedTuple of parameters serialises to the
+workers by value, whereas a NAMED function defined in a script
+(`make_setup() = ...`) serialises by reference and fails to deserialise on
+workers (Julia ships code only for anonymous closures). The wrapping closure
+here is defined inside ModelPNPS, which Luna loads on the workers.
+"""
+run_scan(setup_args::NamedTuple, τs::AbstractVector; kwargs...) =
+    run_scan(() -> build_setup(; setup_args...), τs; kwargs...)
 
 # ============================================================================
 # Loading and post-processing scan output files
