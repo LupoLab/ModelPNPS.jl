@@ -1236,7 +1236,15 @@ Appendix A.2) is preserved. Files written with this convention carry
 as before).
 """
 delayed_input(setup::TGFROGSetup, τ::Real) =
-    setup.Eωk_g12 .+ apply_delay(setup.Eωk_t_base, setup.grid, -τ)
+    # Single fused broadcast: one field-sized allocation instead of two
+    # (apply_delay's intermediate plus the sum) — at production size the
+    # difference is a 2.15 GB transient per worker, which is exactly the
+    # margin that OOM-killed procs=2 tasks at the 100G quota line.
+    setup.Eωk_g12 .+ setup.Eωk_t_base .*
+        reshape(exp.(1im .* grid_delay_phase(setup.grid, -τ)), (:, 1, 1))
+
+"""Delay phase angle ``-ωτ`` on the grid's frequency axis."""
+grid_delay_phase(grid::Grid.EnvGrid, τ::Real) = -grid.ω .* τ
 
 """
     simulate_delay_point(setup::TGFROGSetup, τi;
@@ -1485,6 +1493,11 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
                                      rtol=rtol, max_dz=max_dz, norm=normx,
                                      filename=fname)
         stream && !isnothing(fname) && rm(fname; force=true)
+        # Return freed field-sized garbage (the point's input array, extraction
+        # temporaries) to the allocator before the next point starts — with
+        # two workers sharing a tight cgroup, un-collected garbage from one
+        # worker coinciding with the other's peak is an OOM risk.
+        GC.gc()
         # `zsave` is metadata (stored in /grid/zsave), not a per-delay dataset.
         out_save = Base.structdiff(out, NamedTuple{(:zsave,)})
         Output.scansave(scan, scanidx; grid=cg, out_save...,
