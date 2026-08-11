@@ -1417,7 +1417,7 @@ note that peak memory scales with the number of z points.
 `extra_outputs(output_namedtuple)` — optional escape hatch returning extra
 named tuples to splat into `scansave`. The default is empty.
 """
-function run_scan(setup::TGFROGSetup, τs::AbstractVector;
+function run_scan(setup_fn::Function, τs::AbstractVector;
                   scan_name::AbstractString,
                   exec,
                   nz::Int=2, zsave::Union{Integer,AbstractVector}=nz,
@@ -1425,31 +1425,48 @@ function run_scan(setup::TGFROGSetup, τs::AbstractVector;
                   rtol::Float64=1e-6,
                   max_dz::Float64=0.0,
                   norm=Luna.RK45.weaknorm,
+                  norm_builder::Union{Nothing,Function}=nothing,
                   stream::Bool=true,
                   extra_outputs::Function=(out)->NamedTuple())
-    # Resolve the z grid up front and persist it once in the metadata. The
-    # resolution is deterministic and saves land exactly on these points, so
-    # /grid/zsave equals the per-point realized `out.zsave`. Use a shallow copy
-    # so the shared `setup.combined_grid` is not mutated.
-    zvec = _resolve_zsave(zsave, setup.grid.zmax)
-    cg = copy(setup.combined_grid)
-    cg["zsave"] = zvec
-    # Solver-accuracy provenance: record what the traces were integrated with.
-    cg["rtol"] = rtol
-    cg["max_dz"] = max_dz > 0 ? max_dz : setup.grid.zmax/2
-    # Delay-convention marker: traces are stored in the paper's gate-delay
-    # frame (see simulate_delay_point); loaders must not reverse the axis.
-    cg["delay_convention"] = "gate"
-    cg["error_norm"] = _norm_name(norm)
-
     scan = Scans.Scan(scan_name, exec; τ=τs)
+    # LAZY SETUP: everything expensive — building the multi-GB beamlet arrays,
+    # planning the FFTs, resolving metadata — happens inside the scan closure,
+    # on the FIRST point this process executes. At submission time
+    # (SlurmExec/SSHExec generate the job script and submit without running
+    # any point), `setup_fn` is never called, so launching a scan from a
+    # memory-limited login node costs seconds and megabytes. Each array task
+    # re-executes the script and builds its own setup on its first point.
+    setup = nothing
+    zvec = nothing
+    cg = nothing
+    normx = nothing
     Luna.runscan(scan) do scanidx, τi
+        if setup === nothing
+            setup = setup_fn()::TGFROGSetup
+            zvec = _resolve_zsave(zsave, setup.grid.zmax)
+            # `norm_builder` exists because a setup-derived norm (e.g.
+            # `signal_quadrant_norm`) cannot be constructed before the setup:
+            # pass `norm_builder = s -> signal_quadrant_norm(s)` instead of
+            # `norm` and it is built here, lazily.
+            normx = isnothing(norm_builder) ? norm : norm_builder(setup)
+            # Metadata: shallow copy so the shared combined_grid is unmutated;
+            # /grid/zsave equals the per-point realized out.zsave (the
+            # resolution is deterministic). rtol/max_dz/norm are provenance.
+            cg = copy(setup.combined_grid)
+            cg["zsave"] = zvec
+            cg["rtol"] = rtol
+            cg["max_dz"] = max_dz > 0 ? max_dz : setup.grid.zmax/2
+            # Delay-convention marker: traces are stored in the paper's
+            # gate-delay frame; loaders must not reverse the axis.
+            cg["delay_convention"] = "gate"
+            cg["error_norm"] = _norm_name(normx)
+        end
         # Stream the propagation slices to a node-local temp file instead of
         # holding the (ω, ky, kx, z) stack in memory (~2.15 GB × nz at
         # production size); only the extracted (Nω, nz) spectra survive.
         fname = stream ? tempname() * "_pnps.h5" : nothing
         out = simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz,
-                                     rtol=rtol, max_dz=max_dz, norm=norm,
+                                     rtol=rtol, max_dz=max_dz, norm=normx,
                                      filename=fname)
         stream && !isnothing(fname) && rm(fname; force=true)
         # `zsave` is metadata (stored in /grid/zsave), not a per-delay dataset.
@@ -1459,6 +1476,11 @@ function run_scan(setup::TGFROGSetup, τs::AbstractVector;
     end
     return nothing
 end
+
+"""Eager variant: wrap an already-built setup (costs nothing extra when the
+setup exists anyway, e.g. in interactive use or LocalExec runs)."""
+run_scan(setup::TGFROGSetup, τs::AbstractVector; kwargs...) =
+    run_scan(() -> setup, τs; kwargs...)
 
 # ============================================================================
 # Loading and post-processing scan output files
