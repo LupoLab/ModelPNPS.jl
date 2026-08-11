@@ -727,4 +727,35 @@ end
           setup.Eωk_g1 .+ setup.Eωk_g2 .+ setup.Eωk_t_base
 end
 
+# -----------------------------------------------------------------------------
+@testset "complex beamlet spectrum stored with phase" begin
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.25e-3, zmask=0.1,
+                                    apod=:supergauss, apod_param=16)
+    kwargs = (; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6,
+                thickness=10e-6, material=:SiO2,
+                mask_diam=1.0e-3, mask_spacing=0.5e-3,
+                beam, window,
+                trange=20e-15, λlims=(200e-9, 400e-9),
+                R=40e-6, N=32)
+
+    # Transform-limited input: flat phase, so the beamlet spectrum is real.
+    s0 = TS.build_setup(; kwargs...)
+    cg = s0.combined_grid
+    @test haskey(cg, "Eω_beamlet_re") && haskey(cg, "Eω_beamlet_im")
+    E0 = cg["Eω_beamlet_re"] .+ im .* cg["Eω_beamlet_im"]
+    @test abs2.(E0) ≈ cg["Iω_beamlet"] rtol=1e-10
+    @test maximum(abs, cg["Eω_beamlet_im"]) < 1e-8 * maximum(abs, E0)
+    # source spectrum stored too, consistent with Iω
+    @test abs2.(cg["Eω_re"] .+ im .* cg["Eω_im"]) ≈ cg["Iω"] rtol=1e-10
+
+    # Chirped input: the phase must survive into the stored beamlet.
+    s2 = TS.build_setup(; kwargs..., GDD=2e-30)
+    cg2 = s2.combined_grid
+    E2 = cg2["Eω_beamlet_re"] .+ im .* cg2["Eω_beamlet_im"]
+    @test abs2.(E2) ≈ cg2["Iω_beamlet"] rtol=1e-10   # amplitude unchanged
+    @test maximum(abs, cg2["Eω_beamlet_im"]) > 1e-3 * maximum(abs, E2)
+end
+
 end # @testset "Trace simulation"

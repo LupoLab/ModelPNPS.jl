@@ -1011,7 +1011,19 @@ function _combined_grid(grid, xygrid, beam_meta::Dict,
         cg["It_beamlet"] = abs2.(et_beamlet)
         _, eob_beamlet = Maths.oversample(grid.t, et_beamlet; factor=8)
         cg["Ito_beamlet"] = abs2.(eob_beamlet)   # shares the "To" grid above
+        # The COMPLEX beamlet spectrum (amplitude and phase), stored as two
+        # real datasets for cross-language portability (h5py reads HDF5.jl's
+        # native complex compound awkwardly). This is the retrievable ground
+        # truth WITH its spectral phase — it carries any input chirp (GDD/TOD)
+        # exactly, since the mask is a real amplitude filter — enabling
+        # complex-field retrieval-error metrics (Geib ε) and direct truth-GDD
+        # measurements instead of intensity-only comparisons.
+        cg["Eω_beamlet_re"] = real.(Eω_beamlet)
+        cg["Eω_beamlet_im"] = imag.(Eω_beamlet)
     end
+    # The complex INPUT (source) spectrum, same encoding: the pre-mask truth.
+    cg["Eω_re"] = real.(Eω)
+    cg["Eω_im"] = imag.(Eω)
 
     # Window arrays under "window" (+ optional suffixes for multi-window).
     if window isa AbstractSignalWindow
