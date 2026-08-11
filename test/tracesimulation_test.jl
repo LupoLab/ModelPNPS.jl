@@ -718,13 +718,13 @@ end
     τ = 1.5e-15
     # The scan input must carry the probe at -τ (gate-delay/paper convention).
     got = TS.delayed_input(setup, τ)
-    @test got ≈ setup.Eωk_g1 .+ setup.Eωk_g2 .+
+    @test got ≈ setup.Eωk_g12 .+
                 TS.apply_delay(setup.Eωk_t_base, setup.grid, -τ)
-    @test !(got ≈ setup.Eωk_g1 .+ setup.Eωk_g2 .+
+    @test !(got ≈ setup.Eωk_g12 .+
                   TS.apply_delay(setup.Eωk_t_base, setup.grid, τ))
     # τ = 0 is the identity for both conventions.
     @test TS.delayed_input(setup, 0.0) ≈
-          setup.Eωk_g1 .+ setup.Eωk_g2 .+ setup.Eωk_t_base
+          setup.Eωk_g12 .+ setup.Eωk_t_base
 end
 
 # -----------------------------------------------------------------------------
@@ -756,6 +756,90 @@ end
     E2 = cg2["Eω_beamlet_re"] .+ im .* cg2["Eω_beamlet_im"]
     @test abs2.(E2) ≈ cg2["Iω_beamlet"] rtol=1e-10   # amplitude unchanged
     @test maximum(abs, cg2["Eω_beamlet_im"]) > 1e-3 * maximum(abs, E2)
+end
+
+# -----------------------------------------------------------------------------
+@testset "signal_quadrant_norm" begin
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.25e-3, zmask=0.1,
+                                    apod=:supergauss, apod_param=16)
+    setup = TS.build_setup(; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6,
+                             thickness=10e-6, material=:SiO2,
+                             mask_diam=1.0e-3, mask_spacing=0.5e-3,
+                             beam, window,
+                             trange=20e-15, λlims=(200e-9, 400e-9),
+                             R=40e-6, N=32)
+    qnorm = TS.signal_quadrant_norm(setup; floor_rel=1e-6)
+    wknrm = Luna.RK45.weaknorm
+
+    Nω = length(setup.grid.ω)
+    ky = setup.xygrid.ky; kx = setup.xygrid.kx
+    sigmask = (ky .< 0) .& (kx .< 0)'
+    # helper: field with given amplitudes in the signal quadrant / rest
+    function field(a_sig, a_rest)
+        f = fill(ComplexF64(a_rest), (Nω, 32, 32))
+        for ix in 1:32, iy in 1:32
+            sigmask[iy, ix] && (f[:, iy, ix] .= a_sig)
+        end
+        f
+    end
+
+    rtol, atol = 1e-6, 1e-10
+    # Pump-dominated field with a weak signal; error concentrated in the
+    # signal quadrant. The quadrant norm must flag what weaknorm misses.
+    y = field(1e-3, 1.0)
+    err_sig = field(1e-6, 0.0)          # error only in the signal quadrant
+    @test qnorm(err_sig, y, y, rtol, atol) > 100 * wknrm(err_sig, y, y, rtol, atol)
+    # ... because the signal-relative error is ~1e-3/rtol.
+
+    # Error in the pump region: both norms agree to within the region split.
+    err_pump = field(0.0, 1e-6)
+    r = qnorm(err_pump, y, y, rtol, atol) / wknrm(err_pump, y, y, rtol, atol)
+    @test 0.5 < r < 2.0
+
+    # Empty signal quadrant: the floor prevents 0/0 blow-up; finite result.
+    y0 = field(0.0, 1.0)
+    e0 = field(1e-9, 0.0)
+    v = qnorm(e0, y0, y0, rtol, atol)
+    @test isfinite(v) && v > 0
+    # The floor bounds the value: err ≤ ||err_sig|| / (rtol · floor_rel·||rest||)
+    n_sig = sqrt(count(sigmask) * Nω) * 1e-9
+    n_rest = sqrt(count(.!sigmask) * Nω) * 1.0
+    @test v ≤ n_sig / (rtol * 1e-6 * n_rest) * (1 + 1e-9)
+
+    # Wrong grid size errors loudly.
+    bad = zeros(ComplexF64, (Nω, 16, 16))
+    @test_throws DimensionMismatch qnorm(bad, bad, bad, rtol, atol)
+
+    # Provenance labels.
+    @test occursin("signal_quadrant", TS._norm_name(qnorm))
+    @test TS._norm_name(Luna.RK45.weaknorm) == "weaknorm"
+end
+
+# -----------------------------------------------------------------------------
+@testset "streamed output equals in-memory output" begin
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.25e-3, zmask=0.1,
+                                    apod=:supergauss, apod_param=16)
+    setup = TS.build_setup(; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6,
+                             thickness=10e-6, material=:SiO2,
+                             mask_diam=1.0e-3, mask_spacing=0.5e-3,
+                             beam, window,
+                             trange=20e-15, λlims=(200e-9, 400e-9),
+                             R=40e-6, N=32)
+    τ = 1.0e-15
+    out_mem = TS.simulate_delay_point(setup, τ; nz=3)
+    fn = tempname() * "_pnps_test.h5"
+    out_str = TS.simulate_delay_point(setup, τ; nz=3, filename=fn)
+    # identical stepping either way — the file only changes where bytes live
+    @test out_str.Iω_win ≈ out_mem.Iω_win rtol=1e-12
+    @test out_str.Iω_win_reimaged ≈ out_mem.Iω_win_reimaged rtol=1e-12
+    @test out_str.Iω_full ≈ out_mem.Iω_full rtol=1e-12
+    @test out_str.zsave ≈ out_mem.zsave
+    @test isfile(fn)   # user-supplied filename persists (run_scan cleans its own)
+    rm(fn)
 end
 
 end # @testset "Trace simulation"

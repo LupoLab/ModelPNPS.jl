@@ -106,6 +106,7 @@ export AbstractInputBeam, HE11Beam, GaussianBeam,
        apply_tilt, apply_delay,
        makemask, build_window,
        build_setup, simulate_delay_point, run_scan,
+       signal_quadrant_norm,
        extract_signal_spectra,
        load_simulated_scan
 
@@ -384,9 +385,11 @@ struct TGFROGSetup{LO,TR,FTT,WIN,WA}
     FT::FTT
     energyfun_ω::Function
 
-    # Pre-built input beamlets, all in k-space (Nω, Nky, Nkx)
-    Eωk_g1::Array{ComplexF64,3}        # gate 1 (no delay)
-    Eωk_g2::Array{ComplexF64,3}        # gate 2 (no delay)
+    # Pre-built input beamlets, all in k-space (Nω, Nky, Nkx). The gate pair
+    # is stored pre-summed: the two gates are only ever used together
+    # (delayed_input), and one array instead of two saves a full field copy
+    # (2.15 GB at production size).
+    Eωk_g12::Array{ComplexF64,3}       # gate pair g1 + g2 (no delay)
     Eωk_t_base::Array{ComplexF64,3}    # test beam at τ=0
 
     # 1-D reference spectrum (Nω,)
@@ -935,7 +938,7 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
                        typeof(window),typeof(window_array)}(
         λ0, τfwhm, energy, thickness, material, mask_diam, mask_spacing,
         grid, xygrid, linop, transform, FT, energyfun_ω,
-        Eωk_g1, Eωk_g2, Eωk_t_base, Eω,
+        Eωk_g1 .+ Eωk_g2, Eωk_t_base, Eω,
         window, window_array, window_suffix, combined_grid)
 end
 
@@ -1061,20 +1064,38 @@ Apply a precomputed signal window to the output field of `Luna.run`
 `window_array` is broadcast over `ω` (if 2-D) or matched directly (if 3-D),
 and over the `Nz` z-slices in either case.
 """
-function extract_signal_spectra(Eωk_out::AbstractArray{<:Complex,4},
+function extract_signal_spectra(Eωk_z::AbstractArray{<:Complex,3},
                                  window_array::AbstractArray{<:Real},
                                  xygrid::Grid.FreeGrid)
     if ndims(window_array) == 2
-        Eωk_win = Eωk_out .* reshape(window_array, (1, size(window_array)..., 1))
+        Eωk_win = Eωk_z .* reshape(window_array, (1, size(window_array)...))
     elseif ndims(window_array) == 3
-        Eωk_win = Eωk_out .* reshape(window_array, (size(window_array)..., 1))
+        Eωk_win = Eωk_z .* window_array
     else
         error("window_array must be 2-D or 3-D, got $(ndims(window_array))")
     end
     Eωxy_win = ifft(Eωk_win, (2, 3))
     Iω_reimaged = abs2.(Eωxy_win[:, length(xygrid.y) ÷ 2 + 1,
-                                  length(xygrid.x) ÷ 2 + 1, :])
+                                  length(xygrid.x) ÷ 2 + 1])
     Iω_integrated = dropdims(sum(abs2.(Eωk_win); dims=(2, 3)); dims=(2, 3))
+    return Iω_integrated, Iω_reimaged
+end
+
+function extract_signal_spectra(Eωk_out::AbstractArray{<:Complex,4},
+                                 window_array::AbstractArray{<:Real},
+                                 xygrid::Grid.FreeGrid)
+    # Slice-wise loop: peak memory is one windowed slice, not a second copy
+    # of the whole 4-D stack (which at production size is tens of GB).
+    nz = size(Eωk_out, 4)
+    Nω = size(Eωk_out, 1)
+    Iω_integrated = Array{Float64}(undef, Nω, nz)
+    Iω_reimaged = Array{Float64}(undef, Nω, nz)
+    for iz in 1:nz
+        a, b = extract_signal_spectra(view(Eωk_out, :, :, :, iz),
+                                      window_array, xygrid)
+        Iω_integrated[:, iz] = a
+        Iω_reimaged[:, iz] = b
+    end
     return Iω_integrated, Iω_reimaged
 end
 
@@ -1122,6 +1143,85 @@ function _resolve_zsave(zsave::AbstractVector, zmax::Real)
 end
 
 """
+    signal_quadrant_norm(setup::TGFROGSetup; floor_rel=1e-6)
+
+Region-relative RK45 error norm for weak-signal accuracy at moderate `rtol`.
+
+The default `Luna.RK45.weaknorm` measures the step error relative to the norm
+of the WHOLE field, which the three pump beamlets dominate. The FWM signal is
+orders of magnitude weaker, so the stepper's error budget — concentrated on
+the fastest-evolving (signal) components — allows a per-step signal error of
+order `rtol × ‖pump‖/‖signal‖` *relative to the signal*: with `rtol = 1e-6`
+the collected signal carries measured solver errors of 0.1–1% mid-slab,
+growing to ~10% at 40 µm (see `90_solver_accuracy_test.jl`). Brute-forcing
+`rtol = 1e-8` fixes this at ~4× the step count.
+
+This norm instead measures relative error separately in the signal k-space
+quadrant (`kx < 0, ky < 0` — the same quadrant `Iω_full` integrates) and in
+the rest of the field, and returns the larger: `rtol` then controls the
+signal's OWN relative error directly, recovering weak-signal accuracy at
+close to the default-`rtol` step count.
+
+While the signal quadrant is still (nearly) empty its error is measured
+against a floor of `floor_rel × ‖rest‖` (never below `atol`), so early steps
+are not throttled by a 0/0 relative error; once the signal exceeds that
+fraction of the pump field the relative control takes over.
+
+Pass the result to [`simulate_delay_point`](@ref) / [`run_scan`](@ref) via
+their `norm` keyword. Validate a new `(rtol, floor_rel)` choice against a
+tight-`rtol` reference before production use (the pass criterion used here:
+every z-slice of `Iω_win` within 1e-3 relative of an `rtol = 1e-8` run).
+"""
+struct SignalQuadrantNorm
+    sig_quad::BitMatrix
+    floor_rel::Float64
+end
+
+function signal_quadrant_norm(setup::TGFROGSetup; floor_rel::Float64=1e-6)
+    # Same quadrant the Iω_full collection integrates (see the comment there).
+    sig_quad = (setup.xygrid.ky .< 0) .& (setup.xygrid.kx .< 0)'
+    return SignalQuadrantNorm(BitMatrix(sig_quad), floor_rel)
+end
+
+function (n::SignalQuadrantNorm)(yerr, y, yn, rtol, atol)
+    sig_quad = n.sig_quad
+    floor_rel = n.floor_rel
+    Ny, Nx = size(sig_quad)
+    begin
+        size(y, 2) == Ny && size(y, 3) == Nx || throw(DimensionMismatch(
+            "signal_quadrant_norm built for a $(Ny)×$(Nx) transverse grid; " *
+            "the solver state is $(size(y))"))
+        s_y_s = 0.0; s_yn_s = 0.0; s_e_s = 0.0
+        s_y_r = 0.0; s_yn_r = 0.0; s_e_r = 0.0
+        Nω = size(y, 1)
+        @inbounds for ix in 1:Nx, iy in 1:Ny
+            if sig_quad[iy, ix]
+                for iw in 1:Nω
+                    s_y_s += abs2(y[iw, iy, ix])
+                    s_yn_s += abs2(yn[iw, iy, ix])
+                    s_e_s += abs2(yerr[iw, iy, ix])
+                end
+            else
+                for iw in 1:Nω
+                    s_y_r += abs2(y[iw, iy, ix])
+                    s_yn_r += abs2(yn[iw, iy, ix])
+                    s_e_r += abs2(yerr[iw, iy, ix])
+                end
+            end
+        end
+        errwt_r = max(max(sqrt(s_y_r), sqrt(s_yn_r)), atol)
+        floor_s = max(atol, floor_rel * errwt_r)
+        errwt_s = max(max(sqrt(s_y_s), sqrt(s_yn_s)), floor_s)
+        return max(sqrt(s_e_r) / (rtol * errwt_r),
+                   sqrt(s_e_s) / (rtol * errwt_s))
+    end
+end
+
+"""Provenance label for the error norm used by a scan."""
+_norm_name(n::SignalQuadrantNorm) = "signal_quadrant(floor_rel=$(n.floor_rel))"
+_norm_name(f) = f === Luna.RK45.weaknorm ? "weaknorm" : "custom"
+
+"""
     delayed_input(setup, τ) -> Array{ComplexF64,3}
 
 Coherent input field for scan delay `τ`, in the paper's **gate-delay
@@ -1136,7 +1236,7 @@ Appendix A.2) is preserved. Files written with this convention carry
 as before).
 """
 delayed_input(setup::TGFROGSetup, τ::Real) =
-    setup.Eωk_g1 .+ setup.Eωk_g2 .+ apply_delay(setup.Eωk_t_base, setup.grid, -τ)
+    setup.Eωk_g12 .+ apply_delay(setup.Eωk_t_base, setup.grid, -τ)
 
 """
     simulate_delay_point(setup::TGFROGSetup, τi;
@@ -1191,6 +1291,7 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
                               init_dz::Float64=5e-7,
                               rtol::Float64=1e-6,
                               max_dz::Float64=0.0,
+                              norm=Luna.RK45.weaknorm,
                               filename::Union{Nothing,AbstractString}=nothing,
                               skip_propagation::Bool=false)
     # --- Resolve the propagation snapshot grid ---------------------------
@@ -1204,10 +1305,7 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
     if skip_propagation
         # Fake a (Nω, Nky, Nkx, nz) output by stacking the input nz times.
         Nω, Nky, Nkx = size(Eωk_in)
-        Eωk_out = Array{ComplexF64}(undef, Nω, Nky, Nkx, nz_eff)
-        @inbounds for iz in 1:nz_eff
-            Eωk_out[:, :, :, iz] = Eωk_in
-        end
+        getslice = _ -> Eωk_in
         z_realized = copy(zvec)
     else
         save_cond = Output.GridCondition(zvec, nz_eff)
@@ -1225,9 +1323,18 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
         # rtol ≤ 1e-8 and a µm-scale max_dz for quantitative small-effect
         # studies (Raman A/B, low-energy runs, residual-floor analyses).
         Luna.run(Eωk_in, setup.grid, setup.linop, setup.transform, setup.FT,
-                  output; init_dz=init_dz, rtol=rtol,
+                  output; init_dz=init_dz, rtol=rtol, norm=norm,
                   max_dz=(max_dz > 0 ? max_dz : setup.grid.zmax/2))
-        Eωk_out = output["Eω"]
+        # Slice access: streamed runs read one z-slice at a time back from
+        # the HDF5 file (Output.getindex opens the file per read), so the
+        # full (ω, ky, kx, z) stack — tens of GB at production size — never
+        # exists in memory; in-memory runs use free views into it.
+        if isnothing(filename)
+            Eωk_mem = output["Eω"]
+            getslice = iz -> view(Eωk_mem, :, :, :, iz)
+        else
+            getslice = iz -> output["Eω", :, :, :, iz]
+        end
         z_realized = output["z"]
     end
 
@@ -1244,21 +1351,33 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
     # aperture — no power-law approximation. Window-independent, computed once.
     # Shape (Nω, nz). (Luna array dims are (ω, ky, kx, z).)
     sig_quad = (setup.xygrid.ky .< 0) .& (setup.xygrid.kx .< 0)'
-    Iω_full = dropdims(sum(abs2.(Eωk_out) .*
-                           reshape(sig_quad, (1, size(sig_quad)..., 1));
-                           dims=(2, 3)); dims=(2, 3))
+    sig_quad3 = reshape(sig_quad, (1, size(sig_quad)...))
+    Nω = length(setup.grid.ω)
+    single_window = setup.window isa AbstractSignalWindow
+    wins = single_window ? (setup.window_array,) : Tuple(setup.window_array)
+    Iω_full = Array{Float64}(undef, Nω, nz_eff)
+    Iω_w = [Array{Float64}(undef, Nω, nz_eff) for _ in wins]
+    Iω_r = [Array{Float64}(undef, Nω, nz_eff) for _ in wins]
+    for iz in 1:nz_eff
+        Ez = getslice(iz)
+        Iω_full[:, iz] = dropdims(sum(abs2.(Ez) .* sig_quad3;
+                                      dims=(2, 3)); dims=(2, 3))
+        for (iw, arr) in enumerate(wins)
+            a, b = extract_signal_spectra(Ez, arr, setup.xygrid)
+            Iω_w[iw][:, iz] = a
+            Iω_r[iw][:, iz] = b
+        end
+    end
 
-    # --- Extract spectra per window --------------------------------------
-    if setup.window isa AbstractSignalWindow
-        Iω_w, Iω_r = extract_signal_spectra(Eωk_out, setup.window_array,
-                                              setup.xygrid)
-        return (; Iω_win=Iω_w, Iω_win_reimaged=Iω_r, Iω_full, zsave=z_realized)
+    # --- Assemble the per-window outputs ----------------------------------
+    if single_window
+        return (; Iω_win=Iω_w[1], Iω_win_reimaged=Iω_r[1], Iω_full,
+                  zsave=z_realized)
     else
         pairs_kv = Pair{Symbol,Any}[]
-        for (suf, arr) in zip(setup.window_suffix, setup.window_array)
-            Iω_w, Iω_r = extract_signal_spectra(Eωk_out, arr, setup.xygrid)
-            push!(pairs_kv, Symbol("Iω_win" * suf)         => Iω_w)
-            push!(pairs_kv, Symbol("Iω_win" * suf * "_reimaged") => Iω_r)
+        for (iw, suf) in enumerate(setup.window_suffix)
+            push!(pairs_kv, Symbol("Iω_win" * suf)              => Iω_w[iw])
+            push!(pairs_kv, Symbol("Iω_win" * suf * "_reimaged") => Iω_r[iw])
         end
         push!(pairs_kv, :Iω_full => Iω_full)
         push!(pairs_kv, :zsave   => z_realized)
@@ -1305,6 +1424,8 @@ function run_scan(setup::TGFROGSetup, τs::AbstractVector;
                   init_dz::Float64=5e-7,
                   rtol::Float64=1e-6,
                   max_dz::Float64=0.0,
+                  norm=Luna.RK45.weaknorm,
+                  stream::Bool=true,
                   extra_outputs::Function=(out)->NamedTuple())
     # Resolve the z grid up front and persist it once in the metadata. The
     # resolution is deterministic and saves land exactly on these points, so
@@ -1319,11 +1440,18 @@ function run_scan(setup::TGFROGSetup, τs::AbstractVector;
     # Delay-convention marker: traces are stored in the paper's gate-delay
     # frame (see simulate_delay_point); loaders must not reverse the axis.
     cg["delay_convention"] = "gate"
+    cg["error_norm"] = _norm_name(norm)
 
     scan = Scans.Scan(scan_name, exec; τ=τs)
     Luna.runscan(scan) do scanidx, τi
+        # Stream the propagation slices to a node-local temp file instead of
+        # holding the (ω, ky, kx, z) stack in memory (~2.15 GB × nz at
+        # production size); only the extracted (Nω, nz) spectra survive.
+        fname = stream ? tempname() * "_pnps.h5" : nothing
         out = simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz,
-                                     rtol=rtol, max_dz=max_dz)
+                                     rtol=rtol, max_dz=max_dz, norm=norm,
+                                     filename=fname)
+        stream && !isnothing(fname) && rm(fname; force=true)
         # `zsave` is metadata (stored in /grid/zsave), not a per-delay dataset.
         out_save = Base.structdiff(out, NamedTuple{(:zsave,)})
         Output.scansave(scan, scanidx; grid=cg, out_save...,
