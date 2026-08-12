@@ -1330,9 +1330,15 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
         # measured in FROG_paper_new/90_solver_accuracy_test.jl. Tighten to
         # rtol ≤ 1e-8 and a µm-scale max_dz for quantitative small-effect
         # studies (Raman A/B, low-energy runs, residual-floor analyses).
+        # step_on = the save positions: the stepper lands on each zsave point
+        # exactly, so saved slices are step endpoints rather than dense-output
+        # interpolations — the interpolant shares the error norm's weak-signal
+        # blind spot and interpolated saves scatter at the percent level
+        # between runs (FINDINGS F14.12 twin test).
         Luna.run(Eωk_in, setup.grid, setup.linop, setup.transform, setup.FT,
                   output; init_dz=init_dz, rtol=rtol, norm=norm,
-                  max_dz=(max_dz > 0 ? max_dz : setup.grid.zmax/2))
+                  max_dz=(max_dz > 0 ? max_dz : setup.grid.zmax/2),
+                  step_on=zvec)
         # Slice access: streamed runs read one z-slice at a time back from
         # the HDF5 file (Output.getindex opens the file per read), so the
         # full (ω, ky, kx, z) stack — tens of GB at production size — never
