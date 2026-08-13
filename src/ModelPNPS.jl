@@ -147,9 +147,12 @@ information is printed via `@info`.
   `λmin`.
 - `safety=1.5`: multiplier on the required nonlinear k-vector envelope to
   guard against aliasing.
+- `margin=1.1`: multiplier on the resolved grid size before rounding up to the
+  next even 2,3,5-smooth FFT size (guards the containment against grid
+  quantisation).
 """
 function optimal_spatial_grid(f, mask_diam, mask_spacing, λmin, λmax;
-                              n_airy=5, pts_per_lobe=10, safety=1.5)
+                              n_airy=5, pts_per_lobe=10, safety=1.5, margin=1.1)
     x_max = mask_spacing/2 + mask_diam     # outermost mask edge from optical axis
     r_airy_max = 1.22 * λmax * f / mask_diam
     r_airy_min = 1.22 * λmin * f / mask_diam
@@ -168,7 +171,17 @@ function optimal_spatial_grid(f, mask_diam, mask_spacing, λmin, λmax;
     N_from_kspace = 2 * R_min * k_NL_max / π
     @info "N from k-space containment" N_from_kspace
 
-    N = nextpow(2, ceil(Int, max(N_from_realspace, N_from_kspace)))
+    # 2,3,5-smooth FFT sizes are as fast as powers of two for FFTW but track the
+    # requirement much more closely: nextpow(2, ...) rounded 576 up to 1024 (3.2× the
+    # memory and FFT work of 576), whereas nextprod with a 10% margin gives 640.
+    # `margin` guards the containment against grid quantisation on top of `safety`.
+    # N must be even: the grid layout (x = (n - N/2)δx) and the centre-pixel signal
+    # extraction both assume it.
+    Nmin = ceil(Int, margin * max(N_from_realspace, N_from_kspace))
+    N = nextprod([2, 3, 5], Nmin)
+    while isodd(N)
+        N = nextprod([2, 3, 5], N + 1)
+    end
     R = R_min
 
     dx = 2R / N
@@ -436,8 +449,12 @@ function build_he11_kspace(grid::Grid.EnvGrid, xygrid::Grid.FreeGrid,
     k = sqrt.((xygrid.kx .^ 2)' .+ xygrid.ky .^ 2)        # (Nky, Nkx)
     k = reshape(k, (1, size(k)...))                       # (1, Nky, Nkx)
 
-    Eωk = (-a_s^2 * unm * besselj(1, unm) .* besselj.(0, a_s .* k) ./
-           (a_s^2 .* k .^ 2 .- unm^2)
+    # The transverse amplitude depends only on (ky, kx): evaluate the Bessel factor on
+    # the (1, Nky, Nkx) plane once instead of at all Nω×Nky×Nkx points (the subsequent
+    # broadcast chain is unchanged, so the result is identical)
+    A = (-a_s^2 * unm * besselj(1, unm) .* besselj.(0, a_s .* k) ./
+         (a_s^2 .* k .^ 2 .- unm^2))
+    Eωk = (A
            .* Eω
            .* exp.(-1im .* reshape(xygrid.ky, (1, length(xygrid.ky), 1)) .* yshift)
            .* exp.(-1im .* reshape(xygrid.kx, (1, 1, length(xygrid.kx))) .* xshift))
@@ -643,24 +660,24 @@ function build_beamlets(beam::HE11Beam, grid::Grid.EnvGrid,
     #   test (-x, +y)    | gate1 (+x, +y)
     #  ---------------------------------------
     #   signal (-x, -y)  | gate2 (+x, -y)
-    mask_g1 = makemask( d,  d, geom.mask_diam, grid, xygrid;
-                       zmask=beam.f_foc, apod=apod, apod_param=apod_param,
-                       λ0_for_default=geom.λ0)
-    mask_g2 = makemask( d, -d, geom.mask_diam, grid, xygrid;
-                       zmask=beam.f_foc, apod=apod, apod_param=apod_param,
-                       λ0_for_default=geom.λ0)
-    mask_t  = makemask(-d,  d, geom.mask_diam, grid, xygrid;
-                       zmask=beam.f_foc, apod=apod, apod_param=apod_param,
-                       λ0_for_default=geom.λ0)
-
-    Eωk_g1     = Eωk0 .* mask_g1
-    Eωk_g2     = Eωk0 .* mask_g2
-    Eωk_t_base = Eωk0 .* mask_t
+    # Build and apply the masks one at a time: holding all three (plus their products)
+    # simultaneously added ~2 field-sized arrays to the setup's peak memory.
+    Eωk_g1     = Eωk0 .* makemask( d,  d, geom.mask_diam, grid, xygrid;
+                                  zmask=beam.f_foc, apod=apod, apod_param=apod_param,
+                                  λ0_for_default=geom.λ0)
+    Eωk_g2     = Eωk0 .* makemask( d, -d, geom.mask_diam, grid, xygrid;
+                                  zmask=beam.f_foc, apod=apod, apod_param=apod_param,
+                                  λ0_for_default=geom.λ0)
+    Eωk_t_base = Eωk0 .* makemask(-d,  d, geom.mask_diam, grid, xygrid;
+                                  zmask=beam.f_foc, apod=apod, apod_param=apod_param,
+                                  λ0_for_default=geom.λ0)
 
     # Spatially-integrated spectrum of the gate-1 beamlet — a useful diagnostic
     # showing the chromatic vignetting imprinted by the physical mask.
-    Eωxy_g1 = ifft(Eωk_g1, (2, 3))
-    Iω_beamlet = dropdims(sum(abs2.(Eωxy_g1); dims=(2, 3)); dims=(2, 3))
+    # By Parseval (unitary up to 1/(Ny·Nx) for the ifft), the real-space sum equals the
+    # k-space sum — no need to materialise the ifft'd field.
+    NyNx = length(xygrid.y) * length(xygrid.x)
+    Iω_beamlet = dropdims(sum(abs2, Eωk_g1; dims=(2, 3)); dims=(2, 3)) ./ NyNx
 
     beam_meta = Dict{String,Any}(
         "Iω_beamlet" => Iω_beamlet,
@@ -841,6 +858,21 @@ The defaults reproduce the master script
                                     exactly
 - `raman_fraction = 0.18`         — envelope-defined nuclear fraction `f_R`
                                     of χ³ (the Blow–Wood silica value)
+- `raman_impl = :batched`         — Raman implementation: `:batched` computes
+                                    the convolution for all transverse points
+                                    at once (two batched FFTs per RHS
+                                    evaluation); `:frozen` is the legacy
+                                    per-column [`FrozenRamanPolarEnv`](@ref).
+                                    Results agree to rounding accuracy
+- `factored_linop = true`         — use Luna's lazy (factored) linear operator
+                                    and normalisation, saving two field-sized
+                                    arrays; bit-identical to the materialised
+                                    versions
+- `store_window = true`           — store the materialised window array(s) in
+                                    the output metadata (≈1 GiB at production
+                                    size); the window parameters (`window_def`)
+                                    are always stored and reconstruct the
+                                    array via [`build_window`](@ref)
 - `optimal_grid_kwargs`           — extra kwargs forwarded to
                                     `optimal_spatial_grid`
 - `extra_grid_metadata`           — additional entries merged into the
@@ -856,6 +888,9 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
                        apod::Symbol = :supergauss, apod_param = nothing,
                        GDD = 0.0, TOD = 0.0,
                        raman::Bool = false, raman_fraction::Float64 = 0.18,
+                       raman_impl::Symbol = :batched,
+                       factored_linop::Bool = true,
+                       store_window::Bool = true,
                        optimal_grid_kwargs = (;),
                        extra_grid_metadata = Dict{String,Any}())
 
@@ -895,15 +930,28 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
                   "$material has kind :$(rp.kind)")
         rr = Raman.raman_response(grid.to, material,
                                   1.5 * raman_fraction * PhysData.ε_0 * χ3)
-        responses = (Nonlinear.Kerr_env((1 - raman_fraction) * χ3),
-                     FrozenRamanPolarEnv(grid.to, rr))
+        # :batched (default) computes the Raman convolution for all transverse points
+        # at once with batched FFTs (two per RHS evaluation instead of two small serial
+        # FFTs per transverse column); :frozen is the legacy per-column implementation,
+        # kept for A/B comparison. Results agree to rounding accuracy (~1e-15 relative).
+        Rresp = if raman_impl === :batched
+            Nonlinear.RamanPolarEnvBatched(grid.to, rr)
+        elseif raman_impl === :frozen
+            FrozenRamanPolarEnv(grid.to, rr)
+        else
+            error("raman_impl must be :batched or :frozen, got :$raman_impl")
+        end
+        responses = (Nonlinear.Kerr_env((1 - raman_fraction) * χ3), Rresp)
     else
         responses = (Nonlinear.Kerr_env(χ3),)
     end
     nfun = PhysData.ref_index_fun(material, lookup=false)
     nfunreal = (λ) -> real(nfun(λ))
-    linop = LinearOps.make_const_linop(grid, xygrid, nfunreal)
-    normfun = NonlinearRHS.const_norm_free(grid, xygrid, nfunreal)
+    # factored (lazy) operators compute their elements on demand instead of storing two
+    # field-sized arrays; bit-identical to the materialised versions (Luna guarantees
+    # and tests this)
+    linop = LinearOps.make_const_linop(grid, xygrid, nfunreal; factored=factored_linop)
+    normfun = NonlinearRHS.const_norm_free(grid, xygrid, nfunreal; factored=factored_linop)
     densityfun = z -> 1
     _, transform, FT = Luna.setup(grid, xygrid, densityfun, normfun, responses, ())
     _, energyfun_ω = Fields.energyfuncs(grid, xygrid)
@@ -932,7 +980,7 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     combined_grid = _combined_grid(grid, xygrid, beam_meta,
                                     window, window_array, window_suffix,
                                     Eω, λ0, τfwhm, material, thickness,
-                                    extra_grid_metadata)
+                                    extra_grid_metadata; store_window)
 
     return TGFROGSetup{typeof(linop),typeof(transform),typeof(FT),
                        typeof(window),typeof(window_array)}(
@@ -966,10 +1014,25 @@ end
 
 # ----- combined_grid metadata helper ---------------------------------------
 
+# ----- Window parameter serialisation (reconstructible via build_window) ----
+
+_window_def(w::PhysicalMaskWindow) = Dict{String,Any}(
+    "type" => "PhysicalMaskWindow", "holex" => w.holex, "holey" => w.holey,
+    "holediam" => w.holediam, "zmask" => w.zmask, "apod" => string(w.apod),
+    "apod_param" => (w.apod_param === nothing ? "default" : w.apod_param))
+
+_window_def(w::PlanckWindow) = Dict{String,Any}(
+    "type" => "PlanckWindow", "kxc" => w.kxc, "kyc" => w.kyc,
+    "kwidth" => w.kwidth, "pad" => w.pad)
+
+_window_def(w::PlanckOmegaWindow) = Dict{String,Any}(
+    "type" => "PlanckOmegaWindow", "xc" => w.xc, "yc" => w.yc,
+    "holediam" => w.holediam, "f_foc" => w.f_foc, "pad" => w.pad)
+
 function _combined_grid(grid, xygrid, beam_meta::Dict,
                          window, window_array, window_suffix::Vector{String},
                          Eω::AbstractVector, λ0, τfwhm, material, thickness,
-                         extra::Dict)
+                         extra::Dict; store_window::Bool=true)
     cg = Dict{String,Any}()
     for (k, v) in pairs(Grid.to_dict(grid))
         cg[string(k)] = v
@@ -1028,12 +1091,25 @@ function _combined_grid(grid, xygrid, beam_meta::Dict,
     cg["Eω_re"] = real.(Eω)
     cg["Eω_im"] = imag.(Eω)
 
-    # Window arrays under "window" (+ optional suffixes for multi-window).
+    # Window parameters under "window_def" (+ suffixes): always stored — they are a few
+    # scalars and losslessly reconstruct the window via build_window.
     if window isa AbstractSignalWindow
-        cg["window"] = window_array
+        cg["window_def"] = _window_def(window)
     else
-        for (suf, arr) in zip(window_suffix, window_array)
-            cg["window" * suf] = arr
+        for (suf, w) in zip(window_suffix, window)
+            cg["window_def" * suf] = _window_def(w)
+        end
+    end
+    # Window arrays under "window" (+ optional suffixes for multi-window). At production
+    # size a 3-D window is a ~1 GiB Float64 array in every collected file; pass
+    # build_setup(store_window=false) to skip it and rely on window_def instead.
+    if store_window
+        if window isa AbstractSignalWindow
+            cg["window"] = window_array
+        else
+            for (suf, arr) in zip(window_suffix, window_array)
+                cg["window" * suf] = arr
+            end
         end
     end
 
@@ -1067,6 +1143,39 @@ and over the `Nz` z-slices in either case.
 function extract_signal_spectra(Eωk_z::AbstractArray{<:Complex,3},
                                  window_array::AbstractArray{<:Real},
                                  xygrid::Grid.FreeGrid)
+    Nω, Nky, Nkx = size(Eωk_z)
+    if isodd(Nky) || isodd(Nkx)
+        # the centre-pixel phase-sum identity below assumes even grid sizes
+        return _extract_signal_spectra_fft(Eωk_z, window_array, xygrid)
+    end
+    w3 = ndims(window_array) == 3
+    w3 || ndims(window_array) == 2 ||
+        error("window_array must be 2-D or 3-D, got $(ndims(window_array))")
+    # Single pass, no field-sized temporaries. The re-imaged spectrum needs only the
+    # CENTRE pixel of ifft(Eωk_win, (2,3)): at (y, x) index (Nky÷2+1, Nkx÷2+1) the ifft
+    # phase factor is exp(iπ(iky-1))·exp(iπ(ikx-1)) = (-1)^(iky+ikx-2), so the pixel is
+    # the (-1)^…-weighted sum divided by Nky·Nkx — the previous full 2-D ifft (a
+    # field-sized allocation and an N²logN transform per z-slice) computed exactly this.
+    Iω_integrated = zeros(Float64, Nω)
+    acc = zeros(ComplexF64, Nω)
+    @inbounds for ikx in 1:Nkx, iky in 1:Nky
+        sgn = isodd((iky - 1) + (ikx - 1)) ? -1.0 : 1.0
+        for iω in 1:Nω
+            w = w3 ? window_array[iω, iky, ikx] : window_array[iky, ikx]
+            Ew = w * Eωk_z[iω, iky, ikx]
+            Iω_integrated[iω] += abs2(Ew)
+            acc[iω] += sgn * Ew
+        end
+    end
+    Iω_reimaged = abs2.(acc ./ (Nky * Nkx))
+    return Iω_integrated, Iω_reimaged
+end
+
+# Reference implementation via the full 2-D ifft; used as fallback for odd-sized grids
+# and by the test suite to validate the one-pass version.
+function _extract_signal_spectra_fft(Eωk_z::AbstractArray{<:Complex,3},
+                                      window_array::AbstractArray{<:Real},
+                                      xygrid::Grid.FreeGrid)
     if ndims(window_array) == 2
         Eωk_win = Eωk_z .* reshape(window_array, (1, size(window_array)...))
     elseif ndims(window_array) == 3
@@ -1097,6 +1206,24 @@ function extract_signal_spectra(Eωk_out::AbstractArray{<:Complex,4},
         Iω_reimaged[:, iz] = b
     end
     return Iω_integrated, Iω_reimaged
+end
+
+"""
+    _quadrant_spectrum!(out, Ez, quad)
+
+Accumulate `|E|²` over the transverse points selected by the `(Nky, Nkx)` mask `quad`
+into the length-`Nω` vector `out`, without materialising any field-sized temporary
+(the previous broadcast allocated two per z-slice).
+"""
+function _quadrant_spectrum!(out, Ez::AbstractArray{<:Complex,3}, quad::AbstractMatrix)
+    fill!(out, 0.0)
+    @inbounds for ikx in axes(Ez, 3), iky in axes(Ez, 2)
+        quad[iky, ikx] || continue
+        for iω in axes(Ez, 1)
+            out[iω] += abs2(Ez[iω, iky, ikx])
+        end
+    end
+    return out
 end
 
 """
@@ -1217,6 +1344,60 @@ function (n::SignalQuadrantNorm)(yerr, y, yn, rtol, atol)
     end
 end
 
+"""
+Fused error metric for [`SignalQuadrantNorm`](@ref): the DP5 error estimate is computed
+element-by-element on the fly from the stepper's stage arrays instead of materialising a
+field-sized `yerr` array (Luna.RK45 allocates it lazily only for norms without a fused
+version). Same per-element expression and accumulation order as the materialised path,
+so the result is bit-identical.
+"""
+Luna.RK45.fused_errnorm(n::SignalQuadrantNorm) = s -> _sqn_fused(n, s)
+
+function _sqn_fused(n::SignalQuadrantNorm, s)
+    sig_quad = n.sig_quad
+    floor_rel = n.floor_rel
+    Ny, Nx = size(sig_quad)
+    y = s.y
+    yn = s.yn
+    size(y, 2) == Ny && size(y, 3) == Nx || throw(DimensionMismatch(
+        "signal_quadrant_norm built for a $(Ny)×$(Nx) transverse grid; " *
+        "the solver state is $(size(y))"))
+    k1, k2, k3, k4, k5, k6, k7 = s.ks
+    dt = s.dt
+    errest = Luna.RK45.errest
+    e1 = errest[1]; e3 = errest[3]; e4 = errest[4] # errest[2] == 0, skipped as in Luna
+    e5 = errest[5]; e6 = errest[6]; e7 = errest[7]
+    s_y_s = 0.0; s_yn_s = 0.0; s_e_s = 0.0
+    s_y_r = 0.0; s_yn_r = 0.0; s_e_r = 0.0
+    Nω = size(y, 1)
+    @inbounds for ix in 1:Nx, iy in 1:Ny
+        if sig_quad[iy, ix]
+            for iw in 1:Nω
+                yerr = 0 + dt*k1[iw,iy,ix]*e1 + dt*k3[iw,iy,ix]*e3 +
+                           dt*k4[iw,iy,ix]*e4 + dt*k5[iw,iy,ix]*e5 +
+                           dt*k6[iw,iy,ix]*e6 + dt*k7[iw,iy,ix]*e7
+                s_y_s += abs2(y[iw, iy, ix])
+                s_yn_s += abs2(yn[iw, iy, ix])
+                s_e_s += abs2(yerr)
+            end
+        else
+            for iw in 1:Nω
+                yerr = 0 + dt*k1[iw,iy,ix]*e1 + dt*k3[iw,iy,ix]*e3 +
+                           dt*k4[iw,iy,ix]*e4 + dt*k5[iw,iy,ix]*e5 +
+                           dt*k6[iw,iy,ix]*e6 + dt*k7[iw,iy,ix]*e7
+                s_y_r += abs2(y[iw, iy, ix])
+                s_yn_r += abs2(yn[iw, iy, ix])
+                s_e_r += abs2(yerr)
+            end
+        end
+    end
+    errwt_r = max(max(sqrt(s_y_r), sqrt(s_yn_r)), s.atol)
+    floor_s = max(s.atol, floor_rel * errwt_r)
+    errwt_s = max(max(sqrt(s_y_s), sqrt(s_yn_s)), floor_s)
+    return max(sqrt(s_e_r) / (s.rtol * errwt_r),
+               sqrt(s_e_s) / (s.rtol * errwt_s))
+end
+
 """Provenance label for the error norm used by a scan."""
 _norm_name(n::SignalQuadrantNorm) = "signal_quadrant(floor_rel=$(n.floor_rel))"
 _norm_name(f) = f === Luna.RK45.weaknorm ? "weaknorm" : "custom"
@@ -1317,9 +1498,12 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
         z_realized = copy(zvec)
     else
         save_cond = Output.GridCondition(zvec, nz_eff)
+        # cache=false: the crash-resume cache would rewrite the full field-sized array
+        # to the (throwaway) temp file on every save
         output = isnothing(filename) ?
             Output.MemoryOutput(save_cond, "Eω", "z") :
-            Output.HDF5Output(filename, save_cond, "Eω", "z", Output.nostats, false)
+            Output.HDF5Output(filename, save_cond, "Eω", "z", Output.nostats, false,
+                              nothing, false)
         # NOTE the solver tolerance: the RK45 error is controlled relative to
         # the FULL field, which the pump beamlets dominate. The FWM signal is
         # orders of magnitude weaker (signal/pump field ratio ∝ pulse energy),
@@ -1335,10 +1519,13 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
         # interpolations — the interpolant shares the error norm's weak-signal
         # blind spot and interpolated saves scatter at the percent level
         # between runs (FINDINGS F14.12 twin test).
+        # preserve_input=false: the solver adopts Eωk_in as a working buffer instead of
+        # copying it (one field-sized allocation less at peak); Eωk_in is not used again
+        # on this path
         Luna.run(Eωk_in, setup.grid, setup.linop, setup.transform, setup.FT,
                   output; init_dz=init_dz, rtol=rtol, norm=norm,
                   max_dz=(max_dz > 0 ? max_dz : setup.grid.zmax/2),
-                  step_on=zvec)
+                  step_on=zvec, preserve_input=false)
         # Slice access: streamed runs read one z-slice at a time back from
         # the HDF5 file (Output.getindex opens the file per read), so the
         # full (ω, ky, kx, z) stack — tens of GB at production size — never
@@ -1365,7 +1552,6 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
     # aperture — no power-law approximation. Window-independent, computed once.
     # Shape (Nω, nz). (Luna array dims are (ω, ky, kx, z).)
     sig_quad = (setup.xygrid.ky .< 0) .& (setup.xygrid.kx .< 0)'
-    sig_quad3 = reshape(sig_quad, (1, size(sig_quad)...))
     Nω = length(setup.grid.ω)
     single_window = setup.window isa AbstractSignalWindow
     wins = single_window ? (setup.window_array,) : Tuple(setup.window_array)
@@ -1374,8 +1560,7 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
     Iω_r = [Array{Float64}(undef, Nω, nz_eff) for _ in wins]
     for iz in 1:nz_eff
         Ez = getslice(iz)
-        Iω_full[:, iz] = dropdims(sum(abs2.(Ez) .* sig_quad3;
-                                      dims=(2, 3)); dims=(2, 3))
+        _quadrant_spectrum!(view(Iω_full, :, iz), Ez, sig_quad)
         for (iw, arr) in enumerate(wins)
             a, b = extract_signal_spectra(Ez, arr, setup.xygrid)
             Iω_w[iw][:, iz] = a

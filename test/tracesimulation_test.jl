@@ -25,7 +25,7 @@ import Luna: Grid, PhysData
 import FFTW
 import FFTW: fft, ifft
 import HDF5
-import Random: MersenneTwister
+import Random: MersenneTwister, Xoshiro
 
 @testset "Trace simulation" begin
 
@@ -38,9 +38,17 @@ import Random: MersenneTwister
 
     R, N = TS.optimal_spatial_grid(f, mask_diam, mask_spc, λmin, λmax)
 
-    # N is a power of 2.
-    @test N == nextpow(2, N)
+    # N is an even, 2,3,5-smooth FFT size (fast for FFTW without the up-to-2×
+    # overshoot of nextpow(2, ...)).
+    smooth(n) = (for p in (2, 3, 5); while n % p == 0; n ÷= p; end; end; n == 1)
+    @test smooth(N)
+    @test iseven(N)
     @test N > 0
+
+    # The margin keyword scales the resolved size.
+    _, N_bigmargin = TS.optimal_spatial_grid(f, mask_diam, mask_spc, λmin, λmax;
+                                             margin=2.0)
+    @test N_bigmargin > N
 
     # Real-space resolution: dx ≤ Airy(λmin) / pts_per_lobe (default 10).
     dx = 2R / N
@@ -262,6 +270,61 @@ end
 end
 
 # -----------------------------------------------------------------------------
+@testset "extract_signal_spectra: one-pass equals FFT reference" begin
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.25e-3, zmask=0.1,
+                                    apod=:supergauss, apod_param=16)
+    setup = TS.build_setup(; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6,
+                             thickness=10e-6, material=:SiO2,
+                             mask_diam=1.0e-3, mask_spacing=0.5e-3,
+                             beam, window,
+                             trange=20e-15, λlims=(200e-9, 400e-9),
+                             R=40e-6, N=32)
+    Ez = TS.delayed_input(setup, 0.7e-15) # non-trivial complex field
+    for warr in (setup.window_array,                        # 3-D window
+                 abs.(randn(Xoshiro(7), 32, 32)))           # 2-D window
+        a1, b1 = TS.extract_signal_spectra(Ez, warr, setup.xygrid)
+        a2, b2 = TS._extract_signal_spectra_fft(Ez, warr, setup.xygrid)
+        @test isapprox(a1, a2, rtol=1e-12)
+        @test isapprox(b1, b2, rtol=1e-10, atol=1e-12*maximum(b2))
+    end
+    # quadrant spectrum matches the broadcast it replaced
+    sig_quad = (setup.xygrid.ky .< 0) .& (setup.xygrid.kx .< 0)'
+    sq3 = reshape(sig_quad, (1, size(sig_quad)...))
+    ref = dropdims(sum(abs2.(Ez) .* sq3; dims=(2, 3)); dims=(2, 3))
+    out = zeros(length(setup.grid.ω))
+    TS._quadrant_spectrum!(out, Ez, sig_quad)
+    @test isapprox(out, ref, rtol=1e-12)
+end
+
+# -----------------------------------------------------------------------------
+@testset "window storage options" begin
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.25e-3, zmask=0.1,
+                                    apod=:supergauss, apod_param=16)
+    kwargs = (; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6,
+                thickness=10e-6, material=:SiO2,
+                mask_diam=1.0e-3, mask_spacing=0.5e-3,
+                beam, window,
+                trange=20e-15, λlims=(200e-9, 400e-9),
+                R=40e-6, N=32)
+    # default: window array stored, parameters always stored
+    s1 = TS.build_setup(; kwargs...)
+    @test haskey(s1.combined_grid, "window")
+    @test haskey(s1.combined_grid, "window_def")
+    @test s1.combined_grid["window_def"]["type"] == "PhysicalMaskWindow"
+    @test s1.combined_grid["window_def"]["holediam"] == 0.25e-3
+    # store_window=false: parameters only (the array is ~1 GiB at production size)
+    s2 = TS.build_setup(; kwargs..., store_window=false)
+    @test !haskey(s2.combined_grid, "window")
+    @test haskey(s2.combined_grid, "window_def")
+    # the in-memory window array is unaffected
+    @test isequal(s2.window_array, s1.window_array)
+end
+
+# -----------------------------------------------------------------------------
 @testset "_resolve_zsave" begin
     # Integer: uniform grid over [0, zmax], reproduces legacy nz behaviour.
     @test TS._resolve_zsave(2, 10e-6) == [0.0, 10e-6]
@@ -422,6 +485,34 @@ end
     @test haskey(out, :Iω_win)
     @test haskey(out, :Iω_win_reimaged)
     @test haskey(out, :Iω_full)
+
+    # factored (lazy) linop/norm vs materialised: bit-identical end to end
+    setup_mat = TS.build_setup(; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6,
+                                 thickness=1e-6, material=:SiO2,
+                                 mask_diam=1.0e-3, mask_spacing=0.5e-3,
+                                 beam, window,
+                                 trange=20e-15, λlims=(200e-9, 400e-9),
+                                 R=40e-6, N=32, factored_linop=false)
+    out_mat = TS.simulate_delay_point(setup_mat, 0.0; nz=2, init_dz=5e-7)
+    @test isequal(out_mat.Iω_win, out.Iω_win)
+    @test isequal(out_mat.Iω_win_reimaged, out.Iω_win_reimaged)
+    @test isequal(out_mat.Iω_full, out.Iω_full)
+
+    # batched vs frozen (legacy per-column) Raman: agreement to rounding accuracy
+    # through a real propagation
+    ram_kwargs = (; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6,
+                    thickness=1e-6, material=:SiO2,
+                    mask_diam=1.0e-3, mask_spacing=0.5e-3,
+                    beam, window,
+                    trange=20e-15, λlims=(200e-9, 400e-9),
+                    R=40e-6, N=32, raman=true)
+    out_bat = TS.simulate_delay_point(TS.build_setup(; ram_kwargs...), 0.0;
+                                      nz=2, init_dz=5e-7)
+    out_frz = TS.simulate_delay_point(TS.build_setup(; ram_kwargs...,
+                                                       raman_impl=:frozen), 0.0;
+                                      nz=2, init_dz=5e-7)
+    @test isapprox(out_bat.Iω_win, out_frz.Iω_win, rtol=1e-8)
+    @test isapprox(out_bat.Iω_full, out_frz.Iω_full, rtol=1e-8)
     @test size(out.Iω_win) == (length(setup.grid.ω), 2)
     @test size(out.Iω_full) == (length(setup.grid.ω), 2)
     @test all(isfinite, out.Iω_win)
