@@ -22,15 +22,16 @@
 #   julia -e 'using Pkg; Pkg.activate(ENV["HOME"]*"/perfstack/cudaenv");
 #             Pkg.add("CUDA")'
 #
-# Run (adjust partition/gres names to the cluster's GPU queue):
+# Run (partition/gres per the DMOG GPU example script):
 #   sbatch <<'EOF'
-#   #!/bin/bash
-#   #SBATCH --job-name=gpubench
-#   #SBATCH --partition=<gpu-partition>
-#   #SBATCH --gres=gpu:1
+#   #!/bin/bash -l
+#   #SBATCH --export=ALL
+#   #SBATCH -J gpubench
+#   #SBATCH -p gpu
+#   #SBATCH --gres gpu:1
 #   #SBATCH --ntasks=1
 #   #SBATCH --cpus-per-task=4
-#   #SBATCH --mem=64G
+#   #SBATCH --mem=32G
 #   #SBATCH --time=01:00:00
 #   julia --project=$HOME/perfstack/cudaenv \
 #         $HOME/perfstack/ModelPNPS/examples/gpu_bench.jl 1000
