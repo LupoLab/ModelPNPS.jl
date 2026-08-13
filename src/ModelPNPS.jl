@@ -1744,6 +1744,22 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
     results = Dict{String,Any}[]
     HDF5.h5open(collected, "r") do f
         τs = read(f["scanvariables"]["τ"])
+        # k-space-integrated spectra (Iω_win, Iω_full, ...) are in FFT-bin units which
+        # scale as N⁴ at fixed R (Parseval over the transverse FFT: Σₖ|Eₖ|² = N²Σₓ|Eₓ|²
+        # and Σₓ|Eₓ|² ∝ N² at fixed physical energy). When comparing across grid sizes,
+        # rescale the recomputed values to the reference grid's units. The re-imaged
+        # (real-space pixel) spectra are N-invariant and are not rescaled.
+        Nnew = length(setup.xygrid.x)
+        Nref = haskey(f["grid"], "x") ? length(read(f["grid"]["x"])) : Nnew
+        kscale = (Nref/Nnew)^4
+        if Nref != Nnew
+            xref_max = maximum(abs, read(f["grid"]["x"]))
+            isapprox(xref_max, maximum(abs, setup.xygrid.x); rtol=0.05) ||
+                @warn "reference and recomputed grids differ in physical extent; " *
+                      "the N⁴ unit rescaling assumes fixed R and may be invalid"
+            @info "grid size differs (N=$Nnew vs reference $Nref): " *
+                  "k-integrated datasets rescaled by (Nref/N)⁴ = $kscale before comparison"
+        end
         for idx in scanidcs
             τi = τs[idx]
             fname = stream ? tempname() * "_verify.h5" : nothing
@@ -1769,7 +1785,8 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
                 size(ref) == size(v) || error(
                     "dataset $ks: recomputed size $(size(v)) does not match " *
                     "reference $(size(ref)) — grid mismatch? (compare N via /grid/x)")
-                point[ks] = maximum(abs.(v .- ref)) / maximum(abs, ref)
+                vn = endswith(ks, "_reimaged") ? v : v .* kscale
+                point[ks] = maximum(abs.(vn .- ref)) / maximum(abs, ref)
             end
             @info "verified scan point" point["scanidx"] point["τ"] point["wall_s"] point["maxrss_GiB"]
             for (k, v) in point
