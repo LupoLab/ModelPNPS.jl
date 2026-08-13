@@ -310,16 +310,16 @@ end
                 beam, window,
                 trange=20e-15, λlims=(200e-9, 400e-9),
                 R=40e-6, N=32)
-    # default: window array stored, parameters always stored
+    # default: window array stored, parameters always stored (flattened scalars, so
+    # scansave can write them as plain HDF5 datasets)
     s1 = TS.build_setup(; kwargs...)
     @test haskey(s1.combined_grid, "window")
-    @test haskey(s1.combined_grid, "window_def")
-    @test s1.combined_grid["window_def"]["type"] == "PhysicalMaskWindow"
-    @test s1.combined_grid["window_def"]["holediam"] == 0.25e-3
+    @test s1.combined_grid["window_def_type"] == "PhysicalMaskWindow"
+    @test s1.combined_grid["window_def_holediam"] == 0.25e-3
     # store_window=false: parameters only (the array is ~1 GiB at production size)
     s2 = TS.build_setup(; kwargs..., store_window=false)
     @test !haskey(s2.combined_grid, "window")
-    @test haskey(s2.combined_grid, "window_def")
+    @test haskey(s2.combined_grid, "window_def_type")
     # the in-memory window array is unaffected
     @test isequal(s2.window_array, s1.window_array)
 end
@@ -909,6 +909,49 @@ end
 end
 
 # -----------------------------------------------------------------------------
+@testset "verify_against_collected round-trip" begin
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.25e-3, zmask=0.1,
+                                    apod=:supergauss, apod_param=16)
+    setup_args = (; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6,
+                    thickness=1e-6, material=:SiO2,
+                    mask_diam=1.0e-3, mask_spacing=0.5e-3,
+                    beam, window,
+                    trange=20e-15, λlims=(200e-9, 400e-9),
+                    R=40e-6, N=32)
+    mktempdir() do tmpdir
+        cd(tmpdir) do
+            τs = [-1e-15, 1e-15]
+            TS.run_scan(setup_args, τs; scan_name="verify_selftest",
+                        exec=Luna.Scans.LocalExec(), zsave=2,
+                        init_dz=5e-7, rtol=1e-6)
+            collected = "verify_selftest_collected.h5"
+            @test isfile(collected)
+            res = TS.verify_against_collected(setup_args, collected, [1, 2];
+                                              zsave=2, init_dz=5e-7, rtol=1e-6)
+            @test length(res) == 2
+            for point in res
+                @test point["wall_s"] > 0
+                ndatasets = 0
+                for (k, v) in point
+                    if startswith(k, "Iω")
+                        @test v < 1e-12 # same code, same settings: expect ~0
+                        ndatasets += 1
+                    end
+                end
+                @test ndatasets == 3 # Iω_win, Iω_win_reimaged, Iω_full
+            end
+            # a deliberate grid change is detected as a (finite, nonzero) difference
+            res640 = TS.verify_against_collected(merge(setup_args, (; N=48)),
+                                                 collected, [1];
+                                                 zsave=2, init_dz=5e-7, rtol=1e-6)
+            @test all(isfinite(v) && v > 1e-12
+                      for (k, v) in res640[1] if startswith(k, "Iω"))
+        end
+    end
+end
+
 @testset "streamed output equals in-memory output" begin
     beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
     window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,

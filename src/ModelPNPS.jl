@@ -1091,13 +1091,18 @@ function _combined_grid(grid, xygrid, beam_meta::Dict,
     cg["Eω_re"] = real.(Eω)
     cg["Eω_im"] = imag.(Eω)
 
-    # Window parameters under "window_def" (+ suffixes): always stored — they are a few
-    # scalars and losslessly reconstruct the window via build_window.
+    # Window parameters under "window_def*" (+ suffixes): always stored — they are a few
+    # scalars and losslessly reconstruct the window via build_window. Flattened to
+    # individual entries (scansave writes plain datasets, not nested groups).
     if window isa AbstractSignalWindow
-        cg["window_def"] = _window_def(window)
+        for (fk, fv) in _window_def(window)
+            cg["window_def_" * fk] = fv
+        end
     else
         for (suf, w) in zip(window_suffix, window)
-            cg["window_def" * suf] = _window_def(w)
+            for (fk, fv) in _window_def(w)
+                cg["window_def" * suf * "_" * fk] = fv
+            end
         end
     end
     # Window arrays under "window" (+ optional suffixes for multi-window). At production
@@ -1695,6 +1700,85 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
                          extra_outputs(out)...)
     end
     return nothing
+end
+
+"""
+    verify_against_collected(setup_args, collected, scanidcs;
+                             zsave, init_dz=5e-7, rtol=1e-6, max_dz=0.0,
+                             norm=Luna.RK45.weaknorm, stream=true)
+        -> Vector{Dict}
+
+Recompute selected delay points of an existing scan and compare against the collected
+HDF5 file — the A/B harness for validating a new code path (or a changed grid) against
+reference data.
+
+For each scan index in `scanidcs`, the delay `τ` is read from `/scanvariables/τ` in
+`collected`, the point is recomputed via [`simulate_delay_point`](@ref) with the given
+solver settings (pass the SAME settings the reference scan used, unless deliberately
+testing a change), and every returned trace dataset (`Iω_win`, `Iω_full`, ...) present in
+the file is compared. Reference points that are still all-zero (not yet computed by a
+running scan) are reported as `NaN` and skipped.
+
+Returns one `Dict` per point with the delay, wall time, `Sys.maxrss()` [GiB], and for
+each dataset the global relative difference `maximum(abs, new - ref)/maximum(abs, ref)`.
+
+To test a grid change (e.g. N=640 against an N=1024 reference), pass the changed `N`
+inside `setup_args` — differences then reflect the grid, not the code.
+
+!!! note
+    Strict comparisons need matched FFT configuration: run with the same `fftw_threads`
+    and `fftw_mode` as the reference scan (FFT algorithm choice affects round-off).
+    Julia-level threading (`JULIA_NUM_THREADS`) does NOT affect results and can be used
+    freely to speed up verification.
+"""
+function verify_against_collected(setup_args::NamedTuple, collected::AbstractString,
+                                  scanidcs::AbstractVector{<:Integer};
+                                  zsave::Union{Integer,AbstractVector},
+                                  init_dz::Float64=5e-7,
+                                  rtol::Float64=1e-6,
+                                  max_dz::Float64=0.0,
+                                  norm=Luna.RK45.weaknorm,
+                                  stream::Bool=true)
+    setup = build_setup(; setup_args...)
+    zvec = _resolve_zsave(zsave, setup.grid.zmax)
+    results = Dict{String,Any}[]
+    HDF5.h5open(collected, "r") do f
+        τs = read(f["scanvariables"]["τ"])
+        for idx in scanidcs
+            τi = τs[idx]
+            fname = stream ? tempname() * "_verify.h5" : nothing
+            GC.gc()
+            t0 = time()
+            out = simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz,
+                                       rtol=rtol, max_dz=max_dz, norm=norm,
+                                       filename=fname)
+            wall = time() - t0
+            stream && !isnothing(fname) && rm(fname; force=true)
+            point = Dict{String,Any}("scanidx" => idx, "τ" => τi,
+                                     "wall_s" => wall,
+                                     "maxrss_GiB" => Sys.maxrss()/2^30)
+            out_save = Base.structdiff(out, NamedTuple{(:zsave,)})
+            for (k, v) in pairs(out_save)
+                ks = string(k)
+                haskey(f, ks) || continue
+                ref = f[ks][:, :, idx]
+                if !any(!iszero, ref)
+                    point[ks] = NaN # reference point not (yet) computed
+                    continue
+                end
+                size(ref) == size(v) || error(
+                    "dataset $ks: recomputed size $(size(v)) does not match " *
+                    "reference $(size(ref)) — grid mismatch? (compare N via /grid/x)")
+                point[ks] = maximum(abs.(v .- ref)) / maximum(abs, ref)
+            end
+            @info "verified scan point" point["scanidx"] point["τ"] point["wall_s"] point["maxrss_GiB"]
+            for (k, v) in point
+                startswith(k, "Iω") && @info "  $k: max rel diff = $v"
+            end
+            push!(results, point)
+        end
+    end
+    return results
 end
 
 """Eager variant: wrap an already-built setup (costs nothing extra when the
