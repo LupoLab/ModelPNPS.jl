@@ -18,9 +18,15 @@
 # these sizes over PCIe 4), plus 2–3 weeks of engineering. The point of this
 # script is to decide whether that investment could ever pay off.
 #
-# One-time environment (login node is fine; artifacts finalise on first GPU use):
-#   julia -e 'using Pkg; Pkg.activate(ENV["HOME"]*"/perfstack/cudaenv");
-#             Pkg.add("CUDA")'
+# One-time environment. Install on the login node, but PRECOMPILE on a GPU node:
+# CUDA.jl's BFloat16s dependency executes BF16 conversions at load, and the dmog
+# login node faults on them (illegal instruction) — the Zen-3 GPU nodes do not.
+#   julia -e 'using Pkg; Pkg.activate(ENV["HOME"]*"/sharedscratch/perfstack/cudaenv");
+#             Pkg.add("CUDA")'          # download/install (precompile failure is OK)
+#   srun -p gpu --gres gpu:1 --time=00:30:00 --mem=16G --cpus-per-task=4 \
+#     julia --project=$HOME/sharedscratch/perfstack/cudaenv \
+#     -e 'using Pkg; Pkg.precompile(); using CUDA; CUDA.versioninfo()'
+# (Fallback if a node still faults: add `-C x86-64-v3` to every julia invocation.)
 #
 # Run (partition/gres per the DMOG GPU example script):
 #   sbatch <<'EOF'
@@ -33,8 +39,8 @@
 #   #SBATCH --cpus-per-task=4
 #   #SBATCH --mem=32G
 #   #SBATCH --time=01:00:00
-#   julia --project=$HOME/perfstack/cudaenv \
-#         $HOME/perfstack/ModelPNPS/examples/gpu_bench.jl 1000
+#   julia --project=$HOME/sharedscratch/perfstack/cudaenv \
+#         $HOME/sharedscratch/perfstack/ModelPNPS/examples/gpu_bench.jl 1000
 #   EOF
 #
 # ARGS[1] (optional): RK steps per delay point for the per-point estimate
