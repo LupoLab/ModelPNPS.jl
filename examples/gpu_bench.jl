@@ -22,7 +22,7 @@
 # CUDA.jl's BFloat16s dependency executes BF16 conversions at load, and the dmog
 # login node faults on them (illegal instruction) — the Zen-3 GPU nodes do not.
 #   julia -e 'using Pkg; Pkg.activate(ENV["HOME"]*"/sharedscratch/perfstack/cudaenv");
-#             Pkg.add("CUDA")'          # download/install (precompile failure is OK)
+#             Pkg.add(["CUDA", "AbstractFFTs"])'  # install (precompile failure is OK)
 #   srun -p gpu --gres gpu:1 --time=00:30:00 --mem=16G --cpus-per-task=4 \
 #     julia --project=$HOME/sharedscratch/perfstack/cudaenv \
 #     -e 'using Pkg; Pkg.precompile(); using CUDA; CUDA.versioninfo()'
@@ -48,6 +48,7 @@
 # =============================================================================
 
 using CUDA
+import AbstractFFTs # version-proof FFT planning interface (cuFFT extends it)
 using Printf
 
 const NSTEPS = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 1000
@@ -65,9 +66,13 @@ end
 
 gib(bytes) = bytes / 2^30
 
+# CUDA.jl ≥ 6 renamed available_memory to free_memory
+const freemem = isdefined(CUDA, :free_memory) ? CUDA.free_memory :
+                CUDA.available_memory
+
 println("Device: ", CUDA.name(CUDA.device()))
 println("Memory: ", round(gib(CUDA.total_memory()); digits=1), " GiB total, ",
-        round(gib(CUDA.available_memory()); digits=1), " GiB available")
+        round(gib(freemem()); digits=1), " GiB available")
 println("FP64 benchmark; per-point estimates use $NSTEPS RK steps (ARGS[1] to change)\n")
 
 for (Nt, N) in SHAPES
@@ -75,7 +80,7 @@ for (Nt, N) in SHAPES
     # state + one scratch + factored-linop factors (tiny); materialised linop and the
     # doubled Raman buffer are optional extras checked against free memory below
     base_need = 2 * field_bytes + 2^30 # + FFT workspace headroom
-    if CUDA.available_memory() < base_need
+    if freemem() < base_need
         @printf("(%d, %d, %d): skipped — needs ≳%.1f GiB free\n\n", Nt, N, N, gib(base_need))
         continue
     end
@@ -85,7 +90,7 @@ for (Nt, N) in SHAPES
     K = CUDA.rand(ComplexF64, Nt, N, N)
 
     # -- 3-D c2c FFT (in-place; fwd and inv cost the same) --------------------
-    p = CUDA.CUFFT.plan_fft!(E, (1, 2, 3))
+    p = AbstractFFTs.plan_fft!(E, (1, 2, 3))
     t_fft = gputime(() -> p * E)
     @printf("  3-D FFT (c2c, FP64):        %8.2f ms\n", 1e3*t_fft)
 
@@ -101,7 +106,7 @@ for (Nt, N) in SHAPES
 
     # -- propagator kernel, materialised linop (if memory allows) -------------
     t_prop_mat = NaN
-    if CUDA.available_memory() > field_bytes + 2^30
+    if freemem() > field_bytes + 2^30
         L = CUDA.rand(ComplexF64, Nt, N, N) .* (-0.01 - 1e6im)
         prop_mat!() = (@. E *= exp(L*dz); nothing)
         t_prop_mat = gputime(prop_mat!)
@@ -124,9 +129,9 @@ for (Nt, N) in SHAPES
     # -- batched Raman: 2 FFTs on the doubled time grid + broadcasts ----------
     t_raman = NaN
     raman_bytes = 2 * field_bytes
-    if CUDA.available_memory() > raman_bytes + 2^30
+    if freemem() > raman_bytes + 2^30
         B = CUDA.rand(ComplexF64, 2Nt, N, N)
-        pB = CUDA.CUFFT.plan_fft!(B, 1)
+        pB = AbstractFFTs.plan_fft!(B, 1)
         hω = CUDA.rand(ComplexF64, 2Nt)
         hr = reshape(hω, 2Nt, 1, 1)
         raman!() = begin
