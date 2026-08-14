@@ -1921,6 +1921,10 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
             τi = τs[idx]
             fname = stream ? tempname() * "_verify.h5" : nothing
             GC.gc()
+            # On a device the array library's pool is not returned by GC alone, so
+            # successive points would accumulate it until the card fills.
+            Luna.device_reclaim()
+            devfree0 = Luna.device_memory_status()
             t0 = time()
             out = simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz,
                                        rtol=rtol, max_dz=max_dz, norm=norm,
@@ -1930,6 +1934,13 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
             point = Dict{String,Any}("scanidx" => idx, "τ" => τi,
                                      "wall_s" => wall,
                                      "maxrss_GiB" => Sys.maxrss()/2^30)
+            # `maxrss` is HOST memory; on a device that is only the input construction,
+            # the save buffer and the runtime, so report the device side separately.
+            devfree1 = Luna.device_memory_status()
+            if !isnothing(devfree0) && !isnothing(devfree1)
+                point["device_used_GiB"] = (devfree0[1] - devfree1[1])/2^30
+                point["device_free_GiB"] = devfree1[1]/2^30
+            end
             out_save = Base.structdiff(out, NamedTuple{(:zsave,)})
             for (k, v) in pairs(out_save)
                 ks = string(k)
