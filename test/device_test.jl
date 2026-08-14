@@ -178,6 +178,33 @@ if have_jlarrays
                           ntuple(_ -> JLArray(randn(rng, ComplexF64, sz[1], 8, 8)), 7),
                           nothing, host.dt, host.rtol, host.atol, qn)
         @test_throws DimensionMismatch f(bad)
+
+        # the cached device mask is the quadrant indicator, on the right array type
+        mask = TS._sqn_devmask!(qn, dev.y)
+        @test Utils.backend(mask) isa Utils.DeviceBackend
+        @test size(mask) == (1, 16, 16)
+        @test Array(mask)[1, :, :] == Float64.(qn.sig_quad)
+        @test TS._sqn_devmask!(qn, dev.y) === mask     # cached, not rebuilt
+    end
+
+    @testset "delay point with the quadrant norm on device" begin
+        # The norm has to work through a whole propagation, not just when called
+        # directly: an error metric that is merely wrong (rather than throwing) shows up
+        # only as the stepper rejecting every step.
+        #
+        # NB rtol=1e-6, not the production 1e-8. On a grid this small the signal
+        # quadrant holds numerical noise rather than a real FWM signal, and at 1e-8 the
+        # default floor_rel=1e-6 lets the norm chase that noise's relative error until
+        # the stepper gives up — on the HOST as well as on a device. That is a property
+        # of the tolerance/floor pair on a toy grid, not of the device path.
+        sh = TS.build_setup(; base_kwargs...)
+        sd = TS.build_setup(; base_kwargs..., arraytype=JLArray)
+        qh = TS.signal_quadrant_norm(sh)
+        qd = TS.signal_quadrant_norm(sd)
+        oh = TS.simulate_delay_point(sh, 0.0; nz=2, init_dz=5e-7, rtol=1e-6, norm=qh)
+        od = TS.simulate_delay_point(sd, 0.0; nz=2, init_dz=5e-7, rtol=1e-6, norm=qd)
+        @test isapprox(od.Iω_win, oh.Iω_win; rtol=1e-8)
+        @test all(isfinite, od.Iω_win)
     end
 
     @testset "simulate_delay_point on device" begin
@@ -257,10 +284,14 @@ if get(ENV, "LUNA_TEST_CUDA", "") == "1"
 
             # The setup-derived error norm must work on the device too: it is what
             # production scans use, and without a fused method the solver would refuse.
+            # rtol=1e-6 here for the reason given in the JLArray version of this test.
             qn = TS.signal_quadrant_norm(sd)
+            qh2 = TS.signal_quadrant_norm(sh)
             @test TS.Luna.RK45.fused_errnorm(qn) !== nothing
-            oq = TS.simulate_delay_point(sd, 0.0; nz=2, init_dz=5e-7, rtol=1e-8, norm=qn)
+            oq = TS.simulate_delay_point(sd, 0.0; nz=2, init_dz=5e-7, rtol=1e-6, norm=qn)
+            oqh = TS.simulate_delay_point(sh, 0.0; nz=2, init_dz=5e-7, rtol=1e-6, norm=qh2)
             @test all(isfinite, oq.Iω_win)
+            @test isapprox(oq.Iω_win, oqh.Iω_win; rtol=1e-8)
 
             # beamlets_on_host is the memory lever for the largest campaigns; check it
             # produces the same answer, not just that it runs

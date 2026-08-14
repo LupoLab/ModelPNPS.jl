@@ -1331,10 +1331,15 @@ their `norm` keyword. Validate a new `(rtol, floor_rel)` choice against a
 tight-`rtol` reference before production use (the pass criterion used here:
 every z-slice of `Iω_win` within 1e-3 relative of an `rtol = 1e-8` run).
 """
-struct SignalQuadrantNorm
+mutable struct SignalQuadrantNorm
     sig_quad::BitMatrix
     floor_rel::Float64
+    # 0/1 quadrant indicator of shape (1, Nky, Nkx) on the solver's array type, built on
+    # first use by the device path and cached. See `_sqn_devmask!`.
+    devmask::Any
 end
+
+SignalQuadrantNorm(sig_quad, floor_rel) = SignalQuadrantNorm(sig_quad, floor_rel, nothing)
 
 function signal_quadrant_norm(setup::TGFROGSetup; floor_rel::Float64=1e-6)
     # Same quadrant the Iω_full collection integrates (see the comment there).
@@ -1412,49 +1417,76 @@ Luna.RK45.fused_errnorm(n::SignalQuadrantNorm) =
 _sqn_fused(n::SignalQuadrantNorm, s) = _sqn_fused(Luna.Utils.backend(s.y), n, s)
 
 """
-Device version of [`_sqn_fused`](@ref). Computes the same six sums, but as reductions
-over index rectangles rather than a masked scalar loop: the signal quadrant is one
-rectangle (see [`quadrant_ranges`](@ref)) and its complement tiles into two more.
+Device version of [`_sqn_fused`](@ref): the same six sums, computed as reductions along
+ω into one partial per transverse point, which are then split by quadrant.
 
-The complement is summed directly rather than as `total - signal`. That costs one extra
-reduction and avoids a catastrophic cancellation — which matters here precisely because
-this norm exists to resolve a signal orders of magnitude below the pump field.
+Every operand of a reduction here has the SAME shape. That is deliberate: `mapreduce`
+over several arrays does not broadcast shapes (Base throws `DimensionMismatch`, and a
+GPU backend may quietly compute something else instead), so the `(1, Nky, Nkx)` quadrant
+mask cannot be folded into the reduction and is applied afterwards, to the small
+per-transverse-point partials. Reducing over strided views of the quadrant would also
+work in principle, but whole-array reductions are the shape the rest of Luna's device
+code uses and the one best supported across backends.
 
-Like Luna's `weaknorm_fused`, the error estimate is never materialised.
+Both halves are summed directly rather than one being `total - other`, so no
+cancellation is involved. The error estimate is never materialised — it is formed inside
+the reduction kernel.
 """
 function _sqn_fused(::Luna.Utils.DeviceBackend, n::SignalQuadrantNorm, s)
     Ny, Nx = size(n.sig_quad)
     size(s.y, 2) == Ny && size(s.y, 3) == Nx || throw(DimensionMismatch(
         "signal_quadrant_norm built for a $(Ny)×$(Nx) transverse grid; " *
         "the solver state is $(size(s.y))"))
-    ys, xs = quadrant_ranges(n.sig_quad)
-    sig = _sqn_sums(s, ys, xs)
-    # complement = the rows above the quadrant, plus the rest of its own rows
-    rest = _sqn_sums(s, 1:(Ny÷2), 1:Nx) .+ _sqn_sums(s, ys, 1:(Nx÷2))
-
-    errwt_r = max(max(sqrt(rest[1]), sqrt(rest[2])), s.atol)
-    floor_s = max(s.atol, n.floor_rel * errwt_r)
-    errwt_s = max(max(sqrt(sig[1]), sqrt(sig[2])), floor_s)
-    return max(sqrt(rest[3]) / (s.rtol * errwt_r),
-               sqrt(sig[3]) / (s.rtol * errwt_s))
-end
-
-# (Σ|y|², Σ|yn|², Σ|yerr|²) over one index rectangle, in a single fused reduction.
-function _sqn_sums(s, ys, xs)
+    q = _sqn_devmask!(n, s.y)
     dt = s.dt
     e = Luna.RK45.errest
     e1 = e[1]; e3 = e[3]; e4 = e[4]; e5 = e[5]; e6 = e[6]; e7 = e[7]
-    v(a) = view(a, :, ys, xs)
     k1, _, k3, k4, k5, k6, k7 = s.ks
-    f = @inline function (y, yn, a1, a3, a4, a5, a6, a7)
-        yerr = 0 + dt*a1*e1 + dt*a3*e3 + dt*a4*e4 + dt*a5*e5 + dt*a6*e6 + dt*a7*e7
-        (abs2(y), abs2(yn), abs2(yerr))
+
+    # Reduce along ω first, giving one partial sum per transverse point. Every operand
+    # here has the SAME shape: `mapreduce` over several arrays does not broadcast
+    # shapes (Base throws DimensionMismatch; a GPU backend may silently compute
+    # something else), so mixing the (1, Nky, Nkx) mask into the reduction is invalid.
+    # The error estimate is still never materialised — it is formed inside the kernel.
+    Sy = mapreduce(abs2, +, s.y; dims=1)
+    Syn = mapreduce(abs2, +, s.yn; dims=1)
+    Se = mapreduce(+, k1, k3, k4, k5, k6, k7; dims=1) do a1, a3, a4, a5, a6, a7
+        abs2(0 + dt*a1*e1 + dt*a3*e3 + dt*a4*e4 + dt*a5*e5 + dt*a6*e6 + dt*a7*e7)
     end
-    return mapreduce(f, _sqn_add3, v(s.y), v(s.yn), v(k1), v(k3), v(k4), v(k5), v(k6),
-                     v(k7); init=(0.0, 0.0, 0.0))
+
+    # Split by quadrant on the small (1, Nky, Nkx) partials. Both halves are summed
+    # directly rather than one being `total - other`, so no cancellation is involved.
+    r = 1 .- q
+    s_y_s = sum(Sy .* q); s_yn_s = sum(Syn .* q); s_e_s = sum(Se .* q)
+    s_y_r = sum(Sy .* r); s_yn_r = sum(Syn .* r); s_e_r = sum(Se .* r)
+
+    errwt_r = max(max(sqrt(s_y_r), sqrt(s_yn_r)), s.atol)
+    floor_s = max(s.atol, n.floor_rel * errwt_r)
+    errwt_s = max(max(sqrt(s_y_s), sqrt(s_yn_s)), floor_s)
+    return max(sqrt(s_e_r) / (s.rtol * errwt_r),
+               sqrt(s_e_s) / (s.rtol * errwt_s))
 end
 
-@inline _sqn_add3(a, b) = (a[1]+b[1], a[2]+b[2], a[3]+b[3])
+"""
+The quadrant indicator as a `(1, Nky, Nkx)` array on `y`'s array type, built once and
+cached on the norm. Broadcasting it into the reduction costs one small array (8 MB even
+at the largest campaign shape) and keeps the reduction over whole, contiguous arrays.
+
+The mask is built from the same `BitMatrix` the host path uses, via
+[`quadrant_ranges`](@ref) — so its rectangle assertion still guards the device path.
+"""
+function _sqn_devmask!(n::SignalQuadrantNorm, y)
+    Ny, Nx = size(n.sig_quad)
+    want = Base.typename(typeof(y)).wrapper
+    if isnothing(n.devmask) || size(n.devmask) != (1, Ny, Nx) ||
+       Base.typename(typeof(n.devmask)).wrapper !== want
+        ys, xs = quadrant_ranges(n.sig_quad)   # asserts the mask is that rectangle
+        host = zeros(Float64, 1, Ny, Nx)
+        host[1, ys, xs] .= 1.0
+        n.devmask = Adapt.adapt(want, host)
+    end
+    return n.devmask
+end
 
 function _sqn_fused(::Luna.Utils.CPUBackend, n::SignalQuadrantNorm, s)
     sig_quad = n.sig_quad
