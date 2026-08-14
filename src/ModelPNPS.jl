@@ -1896,7 +1896,7 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
                                   norm=Luna.RK45.weaknorm,
                                   twin_period::Int=1,
                                   stream::Bool=true)
-    setup = build_setup(; setup_args...)
+    setup = _build_setup_resolved(setup_args)
     zvec = _resolve_zsave(zsave, setup.grid.zmax)
     results = Dict{String,Any}[]
     HDF5.h5open(collected, "r") do f
@@ -1991,7 +1991,30 @@ workers (Julia ships code only for anonymous closures). The wrapping closure
 here is defined inside ModelPNPS, which Luna loads on the workers.
 """
 run_scan(setup_args::NamedTuple, τs::AbstractVector; kwargs...) =
-    run_scan(() -> build_setup(; setup_args...), τs; kwargs...)
+    run_scan(() -> _build_setup_resolved(setup_args), τs; kwargs...)
+
+"""
+    _build_setup_resolved(setup_args) -> TGFROGSetup
+
+Build the setup, resolving `arraytype` FIRST and then calling [`build_setup`](@ref)
+through `Base.invokelatest`.
+
+`Luna.resolve_arraytype(:cuda)` loads the GPU package at run time, and methods defined
+by a package loaded *during* a call are not visible to that same call — Julia rejects
+them as "too new to be called from this world context". Resolving first and invoking
+afterwards puts the construction in a world where the array type's constructors exist.
+
+This is why a scan script should pass `arraytype=:cuda` inside `setup_args` and let this
+happen on the compute node, rather than loading the GPU package itself.
+"""
+function _build_setup_resolved(setup_args::NamedTuple)
+    args = if haskey(setup_args, :arraytype)
+        merge(setup_args, (; arraytype=Luna.resolve_arraytype(setup_args.arraytype)))
+    else
+        setup_args
+    end
+    return Base.invokelatest(build_setup; args...)::TGFROGSetup
+end
 
 # NOTE on GPU runs: pass `arraytype=:cuda` (and optionally `beamlets_on_host=true`)
 # inside `setup_args`, NOT as a `run_scan` keyword. The setup is built lazily inside the
