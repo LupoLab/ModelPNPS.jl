@@ -1747,6 +1747,7 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
                                   rtol::Float64=1e-6,
                                   max_dz::Float64=0.0,
                                   norm=Luna.RK45.weaknorm,
+                                  twin_period::Int=1,
                                   stream::Bool=true)
     setup = build_setup(; setup_args...)
     zvec = _resolve_zsave(zsave, setup.grid.zmax)
