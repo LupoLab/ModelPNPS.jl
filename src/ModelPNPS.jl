@@ -891,6 +891,7 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
                        raman_impl::Symbol = :batched,
                        factored_linop::Bool = true,
                        store_window::Bool = true,
+                       fftsize::Symbol = :pow2,
                        optimal_grid_kwargs = (;),
                        extra_grid_metadata = Dict{String,Any}())
 
@@ -902,7 +903,7 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     end
 
     # --- Build Luna grids --------------------------------------------------
-    grid = Grid.EnvGrid(thickness, λ0, λlims, trange)
+    grid = Grid.EnvGrid(thickness, λ0, λlims, trange; fftsize=fftsize)
     xygrid = Grid.FreeGrid(R, N)
 
     # --- Material dispersion + Kerr (+ optional Raman) nonlinearity -------
