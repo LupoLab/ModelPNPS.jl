@@ -96,6 +96,7 @@ import FFTW
 import FFTW: fft, ifft, plan_fft
 import HDF5
 import LinearAlgebra: mul!
+import Adapt
 import Statistics: mean
 
 export AbstractInputBeam, HE11Beam, GaussianBeam,
@@ -378,7 +379,7 @@ or [`run_scan`](@ref) to use it.
 The struct is a passive bundle; fields are not part of the public API and
 may evolve. Use the constructors and methods provided.
 """
-struct TGFROGSetup{LO,TR,FTT,WIN,WA}
+struct TGFROGSetup{LO,TR,FTT,WIN,WA,BT,PT}
     # Physical / numerical parameters echoed for output metadata
     λ0::Float64
     τfwhm::Float64
@@ -402,8 +403,15 @@ struct TGFROGSetup{LO,TR,FTT,WIN,WA}
     # is stored pre-summed: the two gates are only ever used together
     # (delayed_input), and one array instead of two saves a full field copy
     # (2.15 GB at production size).
-    Eωk_g12::Array{ComplexF64,3}       # gate pair g1 + g2 (no delay)
-    Eωk_t_base::Array{ComplexF64,3}    # test beam at τ=0
+    # These follow the propagation's array type: on a GPU run they are device-resident
+    # unless `beamlets_on_host=true`, which keeps them here and uploads the delayed sum
+    # once per delay point instead (2 fewer device fields, one transfer per point).
+    Eωk_g12::BT                        # gate pair g1 + g2 (no delay)
+    Eωk_t_base::BT                     # test beam at τ=0
+
+    # Delay phase ramp exp(-iωτ) support: the ω axis on the propagation's array type, so
+    # `delayed_input` can build the ramp without a host/device mismatch
+    ωd::PT
 
     # 1-D reference spectrum (Nω,)
     Eω::Vector{ComplexF64}
@@ -891,6 +899,8 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
                        raman_impl::Symbol = :batched,
                        factored_linop::Bool = true,
                        store_window::Bool = true,
+                       arraytype = Array,
+                       beamlets_on_host::Bool = false,
                        fftsize::Symbol = :pow2,
                        optimal_grid_kwargs = (;),
                        extra_grid_metadata = Dict{String,Any}())
@@ -951,10 +961,14 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     # factored (lazy) operators compute their elements on demand instead of storing two
     # field-sized arrays; bit-identical to the materialised versions (Luna guarantees
     # and tests this)
-    linop = LinearOps.make_const_linop(grid, xygrid, nfunreal; factored=factored_linop)
-    normfun = NonlinearRHS.const_norm_free(grid, xygrid, nfunreal; factored=factored_linop)
+    arraytype = Luna.resolve_arraytype(arraytype)
+    linop = LinearOps.make_const_linop(grid, xygrid, nfunreal;
+                                       factored=factored_linop, arraytype)
+    normfun = NonlinearRHS.const_norm_free(grid, xygrid, nfunreal;
+                                           factored=factored_linop, arraytype)
     densityfun = z -> 1
-    _, transform, FT = Luna.setup(grid, xygrid, densityfun, normfun, responses, ())
+    _, transform, FT = Luna.setup(grid, xygrid, densityfun, normfun, responses, ();
+                                  arraytype)
     _, energyfun_ω = Fields.energyfuncs(grid, xygrid)
 
     # --- 1-D reference spectrum (used by the HE₁₁ builder and as diagnostic)
@@ -983,11 +997,23 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
                                     Eω, λ0, τfwhm, material, thickness,
                                     extra_grid_metadata; store_window)
 
+    # Beamlets are built on the host (masks, Bessel profiles and FFTs are host code).
+    # Move them to the propagation's array type unless asked to keep them here: at the
+    # largest campaign shapes those two fields are the difference between fitting a card
+    # and not, and the per-point upload that replaces them is a fraction of a second.
+    Eωk_g12 = Eωk_g1 .+ Eωk_g2
+    if arraytype !== Array && !beamlets_on_host
+        Eωk_g12 = Adapt.adapt(arraytype, Eωk_g12)
+        Eωk_t_base = Adapt.adapt(arraytype, Eωk_t_base)
+    end
+    ωd = arraytype === Array ? grid.ω : Adapt.adapt(arraytype, collect(grid.ω))
+
     return TGFROGSetup{typeof(linop),typeof(transform),typeof(FT),
-                       typeof(window),typeof(window_array)}(
+                       typeof(window),typeof(window_array),
+                       typeof(Eωk_g12),typeof(ωd)}(
         λ0, τfwhm, energy, thickness, material, mask_diam, mask_spacing,
         grid, xygrid, linop, transform, FT, energyfun_ω,
-        Eωk_g1 .+ Eωk_g2, Eωk_t_base, Eω,
+        Eωk_g12, Eωk_t_base, ωd, Eω,
         window, window_array, window_suffix, combined_grid)
 end
 
@@ -1316,6 +1342,29 @@ function signal_quadrant_norm(setup::TGFROGSetup; floor_rel::Float64=1e-6)
     return SignalQuadrantNorm(BitMatrix(sig_quad), floor_rel)
 end
 
+"""
+    quadrant_ranges(sig_quad) -> (ys, xs)
+
+The signal quadrant as a pair of index ranges. In FFT ordering the negative half of each
+k axis is exactly the second half of its index range, so the mask is a dense rectangle —
+which lets the device norm use strided views instead of a boolean mask (a `BitMatrix`
+cannot enter a device kernel, and a masked reduction would need a gather).
+
+Throws if the mask is not that rectangle, so a future change to the k-space layout
+cannot silently corrupt the solver's error control.
+"""
+function quadrant_ranges(sig_quad::AbstractMatrix{Bool})
+    Ny, Nx = size(sig_quad)
+    (iseven(Ny) && iseven(Nx)) || error(
+        "signal_quadrant_norm needs even transverse grid sizes, got ($Ny, $Nx)")
+    ys = (Ny÷2 + 1):Ny
+    xs = (Nx÷2 + 1):Nx
+    (all(sig_quad[ys, xs]) && count(sig_quad) == length(ys)*length(xs)) || error(
+        "the signal quadrant is not the expected index rectangle — the k-space " *
+        "ordering must have changed. Refusing to guess: the error norm depends on it.")
+    return ys, xs
+end
+
 function (n::SignalQuadrantNorm)(yerr, y, yn, rtol, atol)
     sig_quad = n.sig_quad
     floor_rel = n.floor_rel
@@ -1357,9 +1406,57 @@ field-sized `yerr` array (Luna.RK45 allocates it lazily only for norms without a
 version). Same per-element expression and accumulation order as the materialised path,
 so the result is bit-identical.
 """
-Luna.RK45.fused_errnorm(n::SignalQuadrantNorm) = s -> _sqn_fused(n, s)
+Luna.RK45.fused_errnorm(n::SignalQuadrantNorm) =
+    s -> _sqn_fused(Luna.Utils.backend(s.y), n, s)
 
-function _sqn_fused(n::SignalQuadrantNorm, s)
+_sqn_fused(n::SignalQuadrantNorm, s) = _sqn_fused(Luna.Utils.backend(s.y), n, s)
+
+"""
+Device version of [`_sqn_fused`](@ref). Computes the same six sums, but as reductions
+over index rectangles rather than a masked scalar loop: the signal quadrant is one
+rectangle (see [`quadrant_ranges`](@ref)) and its complement tiles into two more.
+
+The complement is summed directly rather than as `total - signal`. That costs one extra
+reduction and avoids a catastrophic cancellation — which matters here precisely because
+this norm exists to resolve a signal orders of magnitude below the pump field.
+
+Like Luna's `weaknorm_fused`, the error estimate is never materialised.
+"""
+function _sqn_fused(::Luna.Utils.DeviceBackend, n::SignalQuadrantNorm, s)
+    Ny, Nx = size(n.sig_quad)
+    size(s.y, 2) == Ny && size(s.y, 3) == Nx || throw(DimensionMismatch(
+        "signal_quadrant_norm built for a $(Ny)×$(Nx) transverse grid; " *
+        "the solver state is $(size(s.y))"))
+    ys, xs = quadrant_ranges(n.sig_quad)
+    sig = _sqn_sums(s, ys, xs)
+    # complement = the rows above the quadrant, plus the rest of its own rows
+    rest = _sqn_sums(s, 1:(Ny÷2), 1:Nx) .+ _sqn_sums(s, ys, 1:(Nx÷2))
+
+    errwt_r = max(max(sqrt(rest[1]), sqrt(rest[2])), s.atol)
+    floor_s = max(s.atol, n.floor_rel * errwt_r)
+    errwt_s = max(max(sqrt(sig[1]), sqrt(sig[2])), floor_s)
+    return max(sqrt(rest[3]) / (s.rtol * errwt_r),
+               sqrt(sig[3]) / (s.rtol * errwt_s))
+end
+
+# (Σ|y|², Σ|yn|², Σ|yerr|²) over one index rectangle, in a single fused reduction.
+function _sqn_sums(s, ys, xs)
+    dt = s.dt
+    e = Luna.RK45.errest
+    e1 = e[1]; e3 = e[3]; e4 = e[4]; e5 = e[5]; e6 = e[6]; e7 = e[7]
+    v(a) = view(a, :, ys, xs)
+    k1, _, k3, k4, k5, k6, k7 = s.ks
+    f = @inline function (y, yn, a1, a3, a4, a5, a6, a7)
+        yerr = 0 + dt*a1*e1 + dt*a3*e3 + dt*a4*e4 + dt*a5*e5 + dt*a6*e6 + dt*a7*e7
+        (abs2(y), abs2(yn), abs2(yerr))
+    end
+    return mapreduce(f, _sqn_add3, v(s.y), v(s.yn), v(k1), v(k3), v(k4), v(k5), v(k6),
+                     v(k7); init=(0.0, 0.0, 0.0))
+end
+
+@inline _sqn_add3(a, b) = (a[1]+b[1], a[2]+b[2], a[3]+b[3])
+
+function _sqn_fused(::Luna.Utils.CPUBackend, n::SignalQuadrantNorm, s)
     sig_quad = n.sig_quad
     floor_rel = n.floor_rel
     Ny, Nx = size(sig_quad)
@@ -1422,13 +1519,23 @@ Appendix A.2) is preserved. Files written with this convention carry
 (croak's `reverse_trace` auto-detects; legacy marker-less files are reversed
 as before).
 """
-delayed_input(setup::TGFROGSetup, τ::Real) =
+function delayed_input(setup::TGFROGSetup, τ::Real)
     # Single fused broadcast: one field-sized allocation instead of two
     # (apply_delay's intermediate plus the sum) — at production size the
     # difference is a 2.15 GB transient per worker, which is exactly the
     # margin that OOM-killed procs=2 tasks at the 100G quota line.
-    setup.Eωk_g12 .+ setup.Eωk_t_base .*
-        reshape(exp.(1im .* grid_delay_phase(setup.grid, -τ)), (:, 1, 1))
+    # `ωd` is the frequency axis on the beamlets' array type, so the phase ramp is built
+    # where they live and no host vector is broadcast against device data.
+    phase = reshape(exp.(1im .* (-setup.ωd .* -τ)), (:, 1, 1))
+    Eωk = setup.Eωk_g12 .+ setup.Eωk_t_base .* phase
+    # With `beamlets_on_host` the sum is formed on the host and uploaded once here,
+    # trading two resident device fields for one transfer per delay point.
+    return _match_arraytype(Eωk, setup.transform)
+end
+
+_match_arraytype(Eωk, transform) =
+    Luna.Utils.isdevice(transform.Eto) && !Luna.Utils.isdevice(Eωk) ?
+        Adapt.adapt(typeof(transform.Eto).name.wrapper, Eωk) : Eωk
 
 """Delay phase angle ``-ωτ`` on the grid's frequency axis."""
 grid_delay_phase(grid::Grid.EnvGrid, τ::Real) = -grid.ω .* τ
@@ -1703,6 +1810,9 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
         # two workers sharing a tight cgroup, un-collected garbage from one
         # worker coinciding with the other's peak is an OOM risk.
         GC.gc()
+        # A GPU array library keeps its own memory pool, which garbage collection alone
+        # does not return. Without this the next point can find the card full.
+        Luna.device_reclaim()
         # `zsave` is metadata (stored in /grid/zsave), not a per-delay dataset.
         out_save = Base.structdiff(out, NamedTuple{(:zsave,)})
         Output.scansave(scan, scanidx; grid=cg, out_save...,
@@ -1834,6 +1944,11 @@ here is defined inside ModelPNPS, which Luna loads on the workers.
 """
 run_scan(setup_args::NamedTuple, τs::AbstractVector; kwargs...) =
     run_scan(() -> build_setup(; setup_args...), τs; kwargs...)
+
+# NOTE on GPU runs: pass `arraytype=:cuda` (and optionally `beamlets_on_host=true`)
+# inside `setup_args`, NOT as a `run_scan` keyword. The setup is built lazily inside the
+# scan closure, which only ever executes on a compute node — so the GPU package is
+# loaded there and never on the submitting host, which may have no GPU at all.
 
 # ============================================================================
 # Loading and post-processing scan output files
