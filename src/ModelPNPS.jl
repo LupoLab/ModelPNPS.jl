@@ -1487,6 +1487,7 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
                               rtol::Float64=1e-6,
                               max_dz::Float64=0.0,
                               norm=Luna.RK45.weaknorm,
+                              twin_period::Int=1,
                               filename::Union{Nothing,AbstractString}=nothing,
                               skip_propagation::Bool=false)
     # --- Resolve the propagation snapshot grid ---------------------------
@@ -1531,7 +1532,7 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
         Luna.run(Eωk_in, setup.grid, setup.linop, setup.transform, setup.FT,
                   output; init_dz=init_dz, rtol=rtol, norm=norm,
                   max_dz=(max_dz > 0 ? max_dz : setup.grid.zmax/2),
-                  step_on=zvec, preserve_input=false)
+                  step_on=zvec, preserve_input=false, twin_period=twin_period)
         # Slice access: streamed runs read one z-slice at a time back from
         # the HDF5 file (Output.getindex opens the file per read), so the
         # full (ω, ky, kx, z) stack — tens of GB at production size — never
@@ -1630,6 +1631,7 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
                   rtol::Float64=1e-6,
                   max_dz::Float64=0.0,
                   norm=Luna.RK45.weaknorm,
+                  twin_period::Int=1,
                   norm_builder::Union{Nothing,Function}=nothing,
                   fftw_threads::Int=0,
                   fftw_mode::Symbol=:estimate,
@@ -1681,6 +1683,12 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
             # gate-delay frame; loaders must not reverse the axis.
             cg["delay_convention"] = "gate"
             cg["error_norm"] = _norm_name(normx)
+            # Apodisation cadence. 1 = the spectral/temporal windows are applied
+            # in place after EVERY accepted step, which makes the damping scale
+            # with the step count and the scheme non-convergent in rtol; large
+            # values apply them only at saves (Output.willsave), which with
+            # step_on are at identical positions for any rtol.
+            cg["twin_period"] = twin_period
         end
         # Stream the propagation slices to a node-local temp file instead of
         # holding the (ω, ky, kx, z) stack in memory (~2.15 GB × nz at
@@ -1688,7 +1696,7 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
         fname = stream ? tempname() * "_pnps.h5" : nothing
         out = simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz,
                                      rtol=rtol, max_dz=max_dz, norm=normx,
-                                     filename=fname)
+                                     twin_period=twin_period, filename=fname)
         stream && !isnothing(fname) && rm(fname; force=true)
         # Return freed field-sized garbage (the point's input array, extraction
         # temporaries) to the allocator before the next point starts — with
@@ -1768,7 +1776,7 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
             t0 = time()
             out = simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz,
                                        rtol=rtol, max_dz=max_dz, norm=norm,
-                                       filename=fname)
+                                       twin_period=twin_period, filename=fname)
             wall = time() - t0
             stream && !isnothing(fname) && rm(fname; force=true)
             point = Dict{String,Any}("scanidx" => idx, "τ" => τi,
