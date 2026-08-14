@@ -40,7 +40,9 @@
 ## Partition
 #SBATCH -p gpu
 
-set -euo pipefail
+# NB: no `set -e`. A failing test suite should not stop the later steps — the
+# whole point of the job is to collect every result in one submission.
+set -uo pipefail
 
 CUDAROOT="$HOME/sharedscratch/cuda"
 ENVDIR="$CUDAROOT/env"
