@@ -211,4 +211,67 @@ else
     @info "JLArrays not available — skipping ModelPNPS device tests"
 end
 
+# --- Real GPU: gated on LUNA_TEST_CUDA=1, skipped everywhere else -------------
+# The JLArrays tests above validate the device LOGIC. This runs the same thing on
+# actual hardware, which additionally exercises CUDA code generation, cuFFT, and the
+# `arraytype=:cuda` resolution path a production scan uses.
+if get(ENV, "LUNA_TEST_CUDA", "") == "1"
+    cuda_ok = try
+        @eval import CUDA
+        Base.invokelatest(CUDA.functional)
+    catch
+        false
+    end
+    if !cuda_ok
+        @warn "LUNA_TEST_CUDA=1 but CUDA is not functional; skipping"
+    else
+        @testset "CUDA delay point" begin
+            Base.invokelatest(CUDA.allowscalar, false)
+            beam = TS.HE11Beam(125e-6, 5.0, 0.1)
+            window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                            holediam=0.25e-3, zmask=0.1,
+                                            apod=:supergauss, apod_param=16)
+            kw = (; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6,
+                    thickness=1e-6, material=:SiO2,
+                    mask_diam=1.0e-3, mask_spacing=0.5e-3,
+                    beam, window,
+                    trange=20e-15, λlims=(200e-9, 400e-9),
+                    R=40e-6, N=32)
+
+            # `:cuda` must resolve to a device array type — this is the path a scan
+            # script takes, where the symbol is only resolved on the compute node.
+            sd = TS.build_setup(; kw..., arraytype=:cuda)
+            @test Utils.backend(sd.transform.Eto) isa Utils.DeviceBackend
+
+            sh = TS.build_setup(; kw...)
+            for raman in (false, true)
+                sh_r = raman ? TS.build_setup(; kw..., raman=true) : sh
+                sd_r = raman ? TS.build_setup(; kw..., raman=true, arraytype=:cuda) : sd
+                oh = TS.simulate_delay_point(sh_r, 0.5e-15; nz=2, init_dz=5e-7, rtol=1e-8)
+                od = TS.simulate_delay_point(sd_r, 0.5e-15; nz=2, init_dz=5e-7, rtol=1e-8)
+                rel = maximum(abs.(od.Iω_win .- oh.Iω_win)) / maximum(abs, oh.Iω_win)
+                @info "ModelPNPS CUDA vs host" raman rel_Iω_win=rel
+                @test rel < 1e-8
+                @test od.Iω_win isa Array          # extraction lands on the host
+            end
+
+            # The setup-derived error norm must work on the device too: it is what
+            # production scans use, and without a fused method the solver would refuse.
+            qn = TS.signal_quadrant_norm(sd)
+            @test TS.Luna.RK45.fused_errnorm(qn) !== nothing
+            oq = TS.simulate_delay_point(sd, 0.0; nz=2, init_dz=5e-7, rtol=1e-8, norm=qn)
+            @test all(isfinite, oq.Iω_win)
+
+            # beamlets_on_host is the memory lever for the largest campaigns; check it
+            # produces the same answer, not just that it runs
+            sb = TS.build_setup(; kw..., arraytype=:cuda, beamlets_on_host=true)
+            ob = TS.simulate_delay_point(sb, 0.5e-15; nz=2, init_dz=5e-7, rtol=1e-8)
+            oh0 = TS.simulate_delay_point(sh, 0.5e-15; nz=2, init_dz=5e-7, rtol=1e-8)
+            @test isapprox(ob.Iω_win, oh0.Iω_win; rtol=1e-8)
+        end
+    end
+else
+    @info "ModelPNPS CUDA tests skipped (set LUNA_TEST_CUDA=1 on a GPU machine)"
+end
+
 end

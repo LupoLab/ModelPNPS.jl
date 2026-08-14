@@ -97,10 +97,13 @@ echo "=== done ==="
 #   julia -e 'using Pkg; Pkg.activate(ENV["HOME"]*"/sharedscratch/cuda/env");
 #             Pkg.develop(path=ENV["HOME"]*"/sharedscratch/cuda/Luna");
 #             Pkg.develop(path=ENV["HOME"]*"/sharedscratch/cuda/ModelPNPS");
-#             Pkg.add(["CUDA", "JLArrays", "AbstractFFTs", "Test", "Random"])'
+#             Pkg.add(["CUDA", "JLArrays", "AbstractFFTs", "Adapt", "FFTW", "HDF5",
+#                      "LinearAlgebra", "Test", "Random"])'
 #
-# JLArrays/AbstractFFTs are needed because these test files are run directly
-# (not through Pkg.test), so the environment must carry the test-only extras.
+# The test files are run DIRECTLY (not through Pkg.test), so every package they
+# import must be a direct dependency of this environment — including ones that
+# are dependencies of Luna/ModelPNPS themselves (FFTW, HDF5, ...), which are not
+# transitively importable, and the test-only extras (JLArrays, AbstractFFTs).
 #
 # If a node ever faults loading CUDA.jl, add `-C x86-64-v3` to every julia
 # invocation above: that caps the instruction set at an AVX2 baseline every
