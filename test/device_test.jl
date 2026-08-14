@@ -7,7 +7,12 @@
 # JLArrays is unavailable.
 #
 # What this cannot check (and hardware tests must): CUDA code generation, cuFFT
-# semantics, and the actual device memory footprint.
+# semantics, and the actual device memory footprint. Two specific blind spots that have
+# already bitten, both because JLArray is CPU-backed and so tolerates what CUDA rejects:
+#   * a broadcast mixing host and device operands just works under JLArrays;
+#   * so does putting a non-native AbstractArray (e.g. a lazy operator) in a device
+#     broadcast.
+# Where those matter, assert them structurally (on types) rather than by running.
 # =============================================================================
 using Test
 using ModelPNPS
@@ -121,12 +126,26 @@ if have_jlarrays
         @test Utils.backend(sb.Eωk_g12) isa Utils.CPUBackend
         @test Utils.backend(sb.transform.Eto) isa Utils.DeviceBackend
 
+        # The delay phase must live wherever the beamlets do: `delayed_input` combines
+        # them in one broadcast, and CUDA rejects a broadcast mixing host and device
+        # operands. JLArrays does NOT — it is CPU-backed, so such a broadcast simply
+        # works — which is why this is asserted structurally rather than by running it.
+        wrapper(x) = Base.typename(typeof(x)).wrapper
+        for s in (sh, sd, sb)
+            @test wrapper(s.ωd) === wrapper(s.Eωk_g12)
+        end
+
         # delayed_input must produce a device array in every case, since the solver
         # adopts it as a working buffer (preserve_input=false)
         for s in (sd, sb)
             Eωk = TS.delayed_input(s, 0.7e-15)
             @test Utils.backend(Eωk) isa Utils.DeviceBackend
         end
+
+        # ...and beamlets_on_host must give the same delay point, not merely run
+        ob = TS.simulate_delay_point(sb, 0.5e-15; nz=2, init_dz=5e-7, rtol=1e-8)
+        oh = TS.simulate_delay_point(sh, 0.5e-15; nz=2, init_dz=5e-7, rtol=1e-8)
+        @test isapprox(ob.Iω_win, oh.Iω_win; rtol=1e-8)
         # and agree with the host version
         @test isapprox(Array(TS.delayed_input(sd, 0.7e-15)),
                        TS.delayed_input(sh, 0.7e-15); rtol=1e-12)

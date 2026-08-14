@@ -1006,7 +1006,12 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
         Eωk_g12 = Adapt.adapt(arraytype, Eωk_g12)
         Eωk_t_base = Adapt.adapt(arraytype, Eωk_t_base)
     end
-    ωd = arraytype === Array ? grid.ω : Adapt.adapt(arraytype, collect(grid.ω))
+    # The delay phase must live wherever the BEAMLETS do, not wherever the propagation
+    # does: `delayed_input` multiplies them together in one broadcast, and mixing a host
+    # array into a device broadcast is rejected outright by CUDA. With
+    # `beamlets_on_host` the whole expression is evaluated on the host and the result
+    # uploaded afterwards.
+    ωd = Eωk_g12 isa Array ? grid.ω : Adapt.adapt(arraytype, collect(grid.ω))
 
     return TGFROGSetup{typeof(linop),typeof(transform),typeof(FT),
                        typeof(window),typeof(window_array),
