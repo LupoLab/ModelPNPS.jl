@@ -27,8 +27,10 @@ dsname    = length(ARGS) >= 2 ? ARGS[2] : "Iω_win"
 highlight = length(ARGS) >= 3 ? parse.(Int, split(ARGS[3], ",")) : Int[]
 
 HDF5.h5open(collected, "r") do f
-    haskey(f, dsname) || error("no dataset `$dsname` in $collected; " *
-                               "available: $(join(keys(f), \", \"))")
+    if !haskey(f, dsname)
+        avail = join(keys(f), ", ")
+        error("no dataset `$dsname` in $collected; available: $avail")
+    end
     τs = read(f["scanvariables"]["τ"])
     dset = f[dsname]
     npts = size(dset, 3)
