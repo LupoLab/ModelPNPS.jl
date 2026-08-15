@@ -1864,6 +1864,23 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
 end
 
 """
+    _scan_peak(dset) -> Float64
+
+Largest absolute value over every *computed* delay point of a collected trace dataset.
+Read one point at a time rather than whole: this runs against a file a scan may still be
+writing, and the datasets grow with the delay count.
+"""
+function _scan_peak(dset)
+    pk = 0.0
+    for i in 1:size(dset, 3)
+        s = dset[:, :, i]
+        any(!iszero, s) || continue # not yet computed
+        pk = max(pk, maximum(abs, s))
+    end
+    return pk
+end
+
+"""
     verify_against_collected(setup_args, collected, scanidcs;
                              zsave, init_dz=5e-7, rtol=1e-6, max_dz=0.0,
                              norm=Luna.RK45.weaknorm, stream=true)
@@ -1881,7 +1898,20 @@ the file is compared. Reference points that are still all-zero (not yet computed
 running scan) are reported as `NaN` and skipped.
 
 Returns one `Dict` per point with the delay, wall time, `Sys.maxrss()` [GiB], and for
-each dataset the global relative difference `maximum(abs, new - ref)/maximum(abs, ref)`.
+each dataset `ks` the global relative difference
+`maximum(abs, new - ref)/maximum(abs, ref)`, plus three diagnostics:
+
+| key | meaning |
+|---|---|
+| `ks` | max abs difference ÷ **this point's** reference peak |
+| `ks*"\\|relscan"` | max abs difference ÷ the **scan-wide** reference peak |
+| `ks*"\\|refpeak"` | this point's reference peak |
+| `ks*"\\|scanpeak"` | the scan-wide reference peak |
+
+Both normalisations matter. A delay-scan wing carries a signal orders of magnitude below
+the τ≈0 signal, so a difference that is irrelevant in the assembled trace can still be a
+large fraction of that point's own peak. `relscan` is what a FROG retrieval sees; the
+own-peak number is the stricter statement about the code path.
 
 To test a grid change (e.g. N=640 against an N=1024 reference), pass the changed `N`
 inside `setup_args` — differences then reflect the grid, not the code.
@@ -1904,6 +1934,7 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
     setup = _build_setup_resolved(setup_args)
     zvec = _resolve_zsave(zsave, setup.grid.zmax)
     results = Dict{String,Any}[]
+    scanpeaks = Dict{String,Float64}()
     HDF5.h5open(collected, "r") do f
         τs = read(f["scanvariables"]["τ"])
         # k-space-integrated spectra (Iω_win, Iω_full, ...) are in FFT-bin units which
@@ -1962,11 +1993,29 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
                     "dataset $ks: recomputed size $(size(v)) does not match " *
                     "reference $(size(ref)) — grid mismatch? (compare N via /grid/x)")
                 vn = endswith(ks, "_reimaged") ? v : v .* kscale
-                point[ks] = maximum(abs.(vn .- ref)) / maximum(abs, ref)
+                absdiff = maximum(abs.(vn .- ref))
+                refpeak = maximum(abs, ref)
+                point[ks] = absdiff / refpeak
+                # Normalising to the point's OWN peak makes a delay-scan wing — where
+                # the signal beam is orders of magnitude below the τ≈0 signal — look
+                # catastrophic for a difference that is negligible in the assembled
+                # trace. Report the scan-wide normalisation alongside: that is the
+                # quantity a FROG retrieval actually sees. Keep both — a wing point
+                # disagreeing at its own scale is still worth knowing about.
+                scanpeak = get!(scanpeaks, ks) do
+                    _scan_peak(f[ks])
+                end
+                point[ks*"|relscan"] = scanpeak > 0 ? absdiff/scanpeak : NaN
+                point[ks*"|refpeak"] = refpeak
+                point[ks*"|scanpeak"] = scanpeak
             end
             @info "verified scan point" point["scanidx"] point["τ"] point["wall_s"] point["maxrss_GiB"]
-            for (k, v) in point
-                startswith(k, "Iω") && @info "  $k: max rel diff = $v"
+            for k in sort(collect(keys(point)))
+                (startswith(k, "Iω") && !occursin('|', k)) || continue
+                @info "  $k: rel(own peak) = $(point[k])  " *
+                      "rel(scan peak) = $(get(point, k*"|relscan", NaN))  " *
+                      "peak = $(get(point, k*"|refpeak", NaN)) of " *
+                      "$(get(point, k*"|scanpeak", NaN))"
             end
             push!(results, point)
         end

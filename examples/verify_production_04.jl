@@ -109,7 +109,16 @@ for p in results
     haskey(p, "device_used_GiB") &&
         print("  device = $(round(p["device_used_GiB"]; digits=1)) GiB")
     println()
+    # Two normalisations: against this point's own peak (strict, and the right
+    # statement about the code path) and against the scan-wide peak (what the
+    # assembled FROG trace actually shows). A delay wing carries a signal orders
+    # of magnitude below τ≈0, so the two can differ by orders of magnitude and
+    # only the pair is interpretable.
     for k in sort(collect(keys(p)))
-        startswith(k, "Iω") && println("    $(rpad(k, 24)) max rel diff = $(p[k])")
+        (startswith(k, "Iω") && !occursin('|', k)) || continue
+        pk, spk = get(p, k*"|refpeak", NaN), get(p, k*"|scanpeak", NaN)
+        println("    $(rpad(k, 24)) rel(own) = $(p[k])   " *
+                "rel(scan) = $(get(p, k*"|relscan", NaN))   " *
+                "peak/scanpeak = $(pk/spk)")
     end
 end

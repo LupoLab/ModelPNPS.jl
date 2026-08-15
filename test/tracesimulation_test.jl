@@ -930,24 +930,44 @@ end
             @test isfile(collected)
             res = TS.verify_against_collected(setup_args, collected, [1, 2];
                                               zsave=2, init_dz=5e-7, rtol=1e-6)
+            # The `|`-suffixed keys are the normalisation diagnostics, not differences.
+            isdiff(k) = startswith(k, "Iω") && !occursin('|', k)
             @test length(res) == 2
             for point in res
                 @test point["wall_s"] > 0
                 ndatasets = 0
                 for (k, v) in point
-                    if startswith(k, "Iω")
-                        @test v < 1e-12 # same code, same settings: expect ~0
-                        ndatasets += 1
-                    end
+                    isdiff(k) || continue
+                    @test v < 1e-12 # same code, same settings: expect ~0
+                    ndatasets += 1
+                    # Both normalisations must be reported and self-consistent: the
+                    # scan peak is a maximum over every point, so it is never below
+                    # this point's own peak, and the scan-normalised difference is
+                    # therefore never the larger of the two.
+                    @test haskey(point, k*"|relscan")
+                    @test point[k*"|refpeak"] > 0
+                    @test point[k*"|scanpeak"] >= point[k*"|refpeak"]
+                    @test point[k*"|relscan"] <= v + eps()
                 end
                 @test ndatasets == 3 # Iω_win, Iω_win_reimaged, Iω_full
             end
+            # The scan peak is a property of the file, so every point must report the
+            # same value for it — this is what makes the numbers comparable BETWEEN
+            # points, which is the whole reason for reporting it.
+            for k in filter(isdiff, collect(keys(res[1])))
+                @test res[1][k*"|scanpeak"] == res[2][k*"|scanpeak"]
+            end
+            # ...and at least one verified point must BE the scan peak here, since
+            # both points of this two-point scan were verified.
+            @test any(isapprox(p[k*"|refpeak"], p[k*"|scanpeak"])
+                      for p in res, k in filter(isdiff, collect(keys(res[1]))))
+
             # a deliberate grid change is detected as a (finite, nonzero) difference
             res640 = TS.verify_against_collected(merge(setup_args, (; N=48)),
                                                  collected, [1];
                                                  zsave=2, init_dz=5e-7, rtol=1e-6)
             @test all(isfinite(v) && v > 1e-12
-                      for (k, v) in res640[1] if startswith(k, "Iω"))
+                      for (k, v) in res640[1] if isdiff(k))
         end
     end
 end
