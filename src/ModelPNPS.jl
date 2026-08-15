@@ -1838,9 +1838,14 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
         # holding the (ω, ky, kx, z) stack in memory (~2.15 GB × nz at
         # production size); only the extracted (Nω, nz) spectra survive.
         fname = stream ? tempname() * "_pnps.h5" : nothing
-        out = simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz,
-                                     rtol=rtol, max_dz=max_dz, norm=normx,
-                                     twin_period=twin_period, filename=fname)
+        # invokelatest: with `arraytype=:cuda` the GPU package was loaded *inside* this
+        # closure, so its methods are newer than the world this closure is running in
+        # and would be invisible to every device kernel below. One dynamic dispatch per
+        # delay point, against a propagation of minutes.
+        out = Base.invokelatest(simulate_delay_point, setup, τi;
+                                zsave=zvec, init_dz=init_dz,
+                                rtol=rtol, max_dz=max_dz, norm=normx,
+                                twin_period=twin_period, filename=fname)
         stream && !isnothing(fname) && rm(fname; force=true)
         # Return freed field-sized garbage (the point's input array, extraction
         # temporaries) to the allocator before the next point starts — with
@@ -1926,9 +1931,12 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
             Luna.device_reclaim()
             devfree0 = Luna.device_memory_status()
             t0 = time()
-            out = simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz,
-                                       rtol=rtol, max_dz=max_dz, norm=norm,
-                                       twin_period=twin_period, filename=fname)
+            # invokelatest for the same reason as in `run_scan`: the GPU package may
+            # have been loaded by `_build_setup_resolved` above, i.e. during this call.
+            out = Base.invokelatest(simulate_delay_point, setup, τi;
+                                    zsave=zvec, init_dz=init_dz,
+                                    rtol=rtol, max_dz=max_dz, norm=norm,
+                                    twin_period=twin_period, filename=fname)
             wall = time() - t0
             stream && !isnothing(fname) && rm(fname; force=true)
             point = Dict{String,Any}("scanidx" => idx, "τ" => τi,
