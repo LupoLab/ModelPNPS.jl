@@ -1263,6 +1263,218 @@ function _quadrant_spectrum!(out, Ez::AbstractArray{<:Complex,3}, quad::Abstract
     return out
 end
 
+# ============================================================================
+# Save-time extraction — reduce each z-slice as it is produced
+# ============================================================================
+#
+# The default route saves every z-slice in full and reduces the stack afterwards. At
+# production shapes that is 16 × 2.25 GiB written to a temp file and read straight back
+# by the same process, to produce three (Nω, nz) arrays — 32 KB. On the CPU that cost was
+# ~3 % of a delay point; after the GPU port made the propagation 12× faster it is 14-18 %,
+# and 72 GiB of filesystem traffic per point across a many-instance campaign.
+#
+# `TraceExtractOutput` reduces each slice at the moment it is saved, so no slice is ever
+# stored. On a device the reduction runs on the device array itself: `HostOutput` passes
+# `y` through untouched when the handler does not need a host copy (`needs_host_y`, false
+# by default), and because `simulate_delay_point` pins `step_on` to the save positions,
+# `Luna.RK45.interpolate` snaps to the step endpoint and returns that same array. The
+# guard below checks that rather than assuming it.
+#
+# NOTE this needs NO changes in Luna: the handler satisfies the existing `Output`
+# interface and opts out of the device-statistics check with a `nostats_only` method on
+# its own type.
+
+"""
+    _signed_window(w, arraytype) -> array
+
+The signal window with the re-imaging sign pattern `(-1)^((iky-1)+(ikx-1))` folded in,
+on `arraytype`.
+
+Folding the sign into the window lets **one** array serve both reductions of
+[`extract_signal_spectra`](@ref): the signed sum needs it, and the intensity sum is
+unaffected because `|±w·E|² == |w·E|²`. Carrying a separate sign array instead would cost
+a second field-sized device array, and could not be broadcast into the reduction anyway
+(see the shape note in `_sqn_fused`).
+
+A 2-D window is expanded to 3-D: the reduction takes `mapreduce` over two arrays, which
+does not broadcast shapes.
+"""
+function _signed_window(w::AbstractArray{<:Real}, arraytype, Nω::Integer)
+    nd = ndims(w)
+    nd == 2 || nd == 3 || error("window_array must be 2-D or 3-D, got $nd")
+    Nky, Nkx = nd == 3 ? size(w)[2:3] : size(w)
+    sgn = [isodd((iky - 1) + (ikx - 1)) ? -1.0 : 1.0 for iky in 1:Nky, ikx in 1:Nkx]
+    host = nd == 3 ? w .* reshape(sgn, 1, Nky, Nkx) :
+                     repeat(reshape(w .* sgn, 1, Nky, Nkx), Nω, 1, 1)
+    return arraytype === Array ? host : Adapt.adapt(arraytype, host)
+end
+
+"""
+    _extract_slice_device!(Iint, Ireim, Ifull, Ez, wsgn, quadrng)
+
+Reduce one `(Nω, Nky, Nkx)` **device** slice into the three per-ω spectra, writing into
+column views of the host result arrays. Three reductions over dims `(2, 3)` and one small
+copy back per slice; the field itself never moves.
+
+Mathematically identical to [`extract_signal_spectra`](@ref) plus
+[`_quadrant_spectrum!`](@ref), which is what a slice arriving on the host uses instead.
+The sums are formed in a different order here, so results agree to rounding rather than
+bitwise — the standard everywhere else on the device path.
+
+Both operands of the two windowed reductions have the SAME shape: `mapreduce` over
+several arrays does not broadcast (Base throws `DimensionMismatch`, and a GPU backend may
+silently compute something else), which is why the re-imaging sign lives inside `wsgn`
+rather than in a `(1, Nky, Nkx)` array of its own. The quadrant sum is a single-array
+reduction over a strided view, so it reads only the quadrant instead of masking the whole
+field.
+"""
+function _extract_slice_device!(Iint, Ireim, Ifull, Ez, wsgn, quadrng)
+    ys, xs = quadrng
+    Nky, Nkx = size(Ez, 2), size(Ez, 3)
+    sfull = mapreduce(abs2, +, view(Ez, :, ys, xs); dims=(2, 3))
+    sint = mapreduce(+, Ez, wsgn; dims=(2, 3)) do e, w
+        abs2(w * e)
+    end
+    sacc = mapreduce(+, Ez, wsgn; dims=(2, 3)) do e, w
+        w * e
+    end
+    copyto!(Ifull, dropdims(Array(sfull); dims=(2, 3)))
+    copyto!(Iint, dropdims(Array(sint); dims=(2, 3)))
+    Ireim .= abs2.(dropdims(Array(sacc); dims=(2, 3)) ./ (Nky * Nkx))
+    return nothing
+end
+
+"""
+    TraceExtractOutput(setup, zvec, arraytype)
+
+A `Luna` output handler that reduces each saved z-slice to the trace spectra immediately
+and keeps only the results, so the full field is never stored, streamed or transferred.
+
+Satisfies the `Output` interface `Luna.run` uses (the save call, `willsave`, metadata
+calls, and the generic `check_cache` fallback). Metadata is discarded: `ModelPNPS` builds
+its own from `setup.combined_grid`, and the temp file this replaces was thrown away too.
+"""
+mutable struct TraceExtractOutput{S, W, HW, G}
+    save_cond::S
+    saved::Int
+    nz::Int
+    zs::Vector{Float64}
+    wsgn::W               # signed windows on the state's array type; empty on the host
+    hwin::HW              # the plain host windows — ALIASES `setup.window_array`, no copy
+    sig_quad::BitMatrix
+    quadrng::Tuple{UnitRange{Int}, UnitRange{Int}}
+    xygrid::G
+    Iω_w::Vector{Matrix{Float64}}
+    Iω_r::Vector{Matrix{Float64}}
+    Iω_full::Matrix{Float64}
+end
+
+function TraceExtractOutput(setup::TGFROGSetup, zvec::AbstractVector, arraytype)
+    Nω = length(setup.grid.ω)
+    nz = length(zvec)
+    single = setup.window isa AbstractSignalWindow
+    wins = single ? (setup.window_array,) : Tuple(setup.window_array)
+    sig_quad = BitMatrix((setup.xygrid.ky .< 0) .& (setup.xygrid.kx .< 0)')
+    # The signed window exists only to serve the device reduction; on the host the
+    # original kernels take the plain window, so building it would be a field-sized
+    # array for nothing.
+    wsgn = arraytype === Array ? Any[] :
+           Any[_signed_window(w, arraytype, Nω) for w in wins]
+    TraceExtractOutput(Output.GridCondition(zvec, nz), 0, nz, Float64[],
+                       wsgn, wins, sig_quad,
+                       quadrant_ranges(sig_quad),   # asserts the quadrant is that rectangle
+                       setup.xygrid,
+                       [zeros(Float64, Nω, nz) for _ in wins],
+                       [zeros(Float64, Nω, nz) for _ in wins],
+                       zeros(Float64, Nω, nz))
+end
+
+function (o::TraceExtractOutput)(y, t, dt, yfun)
+    save, ts = o.save_cond(y, t, dt, o.saved)
+    while save
+        # `step_on` is pinned to the save positions, so the interpolant snaps to the step
+        # endpoint and hands back `y` itself (`Luna.RK45.interpolate`). Taking `y`
+        # directly is then not an approximation but the same array — and on a device it
+        # avoids the device-to-host copy `HostOutput` would otherwise make. The test
+        # mirrors Luna's own endpoint snap; if a caller ever saves off a step boundary we
+        # fall back to the interpolant (correct, just copied to the host first).
+        Ez = abs(ts - t) <= 4*eps(abs(t)) ? y : yfun(ts)
+        o.saved += 1
+        iz = o.saved
+        iz <= o.nz || error("TraceExtractOutput: more saves ($iz) than the $(o.nz) " *
+                            "zsave positions it was built for")
+        _reduce_slice!(o, Ez, iz)
+        push!(o.zs, ts)
+        save, ts = o.save_cond(y, t, dt, o.saved)
+    end
+end
+
+"""
+    _reduce_slice!(o::TraceExtractOutput, Ez, iz)
+
+Reduce one saved slice into column `iz`, routing on where the slice actually is.
+
+A device propagation still delivers ONE slice on the host: `z = 0` is the step *start*,
+not an endpoint, so `Luna.run` reaches it through the interpolant and `HostOutput` copies
+it. Rather than uploading that slice back (or keeping a second, host-resident signed
+window), a host-resident slice goes through the original
+[`extract_signal_spectra`](@ref)/[`_quadrant_spectrum!`](@ref) kernels against the plain
+host window the setup already holds. That costs no extra memory and no transfer, and it
+makes the host result bit-identical to the save-the-stack route by construction rather
+than by a parallel implementation that could drift.
+"""
+function _reduce_slice!(o::TraceExtractOutput, Ez, iz)
+    if Luna.Utils.isdevice(Ez)
+        for iw in eachindex(o.wsgn)
+            _extract_slice_device!(view(o.Iω_w[iw], :, iz), view(o.Iω_r[iw], :, iz),
+                                   view(o.Iω_full, :, iz), Ez, o.wsgn[iw], o.quadrng)
+        end
+    else
+        _quadrant_spectrum!(view(o.Iω_full, :, iz), Ez, o.sig_quad)
+        for iw in eachindex(o.hwin)
+            a, b = extract_signal_spectra(Ez, o.hwin[iw], o.xygrid)
+            o.Iω_w[iw][:, iz] .= a
+            o.Iω_r[iw][:, iz] .= b
+        end
+    end
+    return nothing
+end
+
+# Metadata calls from `Luna.run` (grid, simulation type). Discarded — see the docstring.
+(o::TraceExtractOutput)(d; kwargs...) = nothing
+(o::TraceExtractOutput)(key::AbstractString, val; kwargs...) = nothing
+
+Output.willsave(o::TraceExtractOutput, y, t, dt) = first(o.save_cond(y, t, dt, o.saved))
+
+# `Luna.run` refuses a device propagation with statistics, because a statistics function
+# is called with the state on every step and would force a full transfer each time. This
+# handler collects none, so it opts out on its own type — no change in Luna.
+Luna.nostats_only(::TraceExtractOutput) = true
+# Belt and braces: `HostOutput` must not copy `y` per step for us (this is already the
+# generic default, but the whole design depends on it).
+Luna.needs_host_y(::TraceExtractOutput) = false
+
+"""
+    _trace_results(setup, o::TraceExtractOutput) -> NamedTuple
+
+The same `NamedTuple` the save-the-stack route returns, assembled from an extraction
+handler. Kept next to that route's assembly block so the two cannot drift.
+"""
+function _trace_results(setup::TGFROGSetup, o::TraceExtractOutput)
+    if setup.window isa AbstractSignalWindow
+        return (; Iω_win=o.Iω_w[1], Iω_win_reimaged=o.Iω_r[1], Iω_full=o.Iω_full,
+                  zsave=copy(o.zs))
+    end
+    pairs_kv = Pair{Symbol,Any}[]
+    for (iw, suf) in enumerate(setup.window_suffix)
+        push!(pairs_kv, Symbol("Iω_win" * suf)               => o.Iω_w[iw])
+        push!(pairs_kv, Symbol("Iω_win" * suf * "_reimaged") => o.Iω_r[iw])
+    end
+    push!(pairs_kv, :Iω_full => o.Iω_full)
+    push!(pairs_kv, :zsave   => copy(o.zs))
+    return NamedTuple(pairs_kv)
+end
+
 """
     _resolve_zsave(zsave, zmax) -> Vector{Float64}
 
@@ -1633,6 +1845,7 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
                               norm=Luna.RK45.weaknorm,
                               twin_period::Int=1,
                               filename::Union{Nothing,AbstractString}=nothing,
+                              extract_on_save::Union{Nothing,Bool}=nothing,
                               skip_propagation::Bool=false)
     # --- Resolve the propagation snapshot grid ---------------------------
     zvec = _resolve_zsave(zsave, setup.grid.zmax)
@@ -1640,6 +1853,27 @@ function simulate_delay_point(setup::TGFROGSetup, τi::Real;
 
     # --- Build the delayed test beam and coherently superpose ------------
     Eωk_in = delayed_input(setup, τi)
+
+    # --- Save-time extraction --------------------------------------------
+    # Reduce each z-slice as it is produced rather than saving the whole field and
+    # reducing afterwards; `filename`/streaming then has nothing to stream. Defaults ON
+    # for a device propagation, where the saved stack costs 14-18 % of the delay point in
+    # temp-file traffic, and OFF on the host, whose current route is validated
+    # bit-for-bit against the production references — pass `true` to use it there too
+    # (it is bit-identical: the same host kernels on the same arrays, minus a lossless
+    # HDF5 round trip).
+    if something(extract_on_save, Luna.Utils.isdevice(Eωk_in)) && !skip_propagation
+        arrwrap = Base.typename(typeof(Eωk_in)).wrapper
+        o = TraceExtractOutput(setup, zvec, arrwrap)
+        Luna.run(Eωk_in, setup.grid, setup.linop, setup.transform, setup.FT, o;
+                 init_dz=init_dz, rtol=rtol, norm=norm,
+                 max_dz=(max_dz > 0 ? max_dz : setup.grid.zmax/2),
+                 step_on=zvec, preserve_input=false, twin_period=twin_period)
+        o.saved == nz_eff || error(
+            "save-time extraction got $(o.saved) of $nz_eff z-slices; the stepper did " *
+            "not land on every save position")
+        return _trace_results(setup, o)
+    end
 
     # --- Propagate (or fake the propagation for tests) -------------------
     if skip_propagation
@@ -1780,6 +2014,7 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
                   fftw_threads::Int=0,
                   fftw_mode::Symbol=:estimate,
                   stream::Bool=true,
+                  extract_on_save::Union{Nothing,Bool}=nothing,
                   extra_outputs::Function=(out)->NamedTuple())
     scan = Scans.Scan(scan_name, exec; τ=τs)
     # LAZY SETUP: everything expensive — building the multi-GB beamlet arrays,
@@ -1837,7 +2072,10 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
         # Stream the propagation slices to a node-local temp file instead of
         # holding the (ω, ky, kx, z) stack in memory (~2.15 GB × nz at
         # production size); only the extracted (Nω, nz) spectra survive.
-        fname = stream ? tempname() * "_pnps.h5" : nothing
+        # Save-time extraction stores no slices, so there is nothing to stream: skip the
+        # temp file rather than creating one that is written to zero times.
+        onsave = something(extract_on_save, Luna.Utils.isdevice(setup.transform.Eto))
+        fname = (stream && !onsave) ? tempname() * "_pnps.h5" : nothing
         # invokelatest: with `arraytype=:cuda` the GPU package was loaded *inside* this
         # closure, so its methods are newer than the world this closure is running in
         # and would be invisible to every device kernel below. One dynamic dispatch per
@@ -1845,7 +2083,8 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
         out = Base.invokelatest(simulate_delay_point, setup, τi;
                                 zsave=zvec, init_dz=init_dz,
                                 rtol=rtol, max_dz=max_dz, norm=normx,
-                                twin_period=twin_period, filename=fname)
+                                twin_period=twin_period, filename=fname,
+                                extract_on_save=onsave)
         stream && !isnothing(fname) && rm(fname; force=true)
         # Return freed field-sized garbage (the point's input array, extraction
         # temporaries) to the allocator before the next point starts — with
@@ -1930,7 +2169,8 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
                                   max_dz::Float64=0.0,
                                   norm=Luna.RK45.weaknorm,
                                   twin_period::Int=1,
-                                  stream::Bool=true)
+                                  stream::Bool=true,
+                                  extract_on_save::Union{Nothing,Bool}=nothing)
     setup = _build_setup_resolved(setup_args)
     zvec = _resolve_zsave(zsave, setup.grid.zmax)
     results = Dict{String,Any}[]
@@ -1955,7 +2195,9 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
         end
         for idx in scanidcs
             τi = τs[idx]
-            fname = stream ? tempname() * "_verify.h5" : nothing
+            onsave = something(extract_on_save,
+                               Luna.Utils.isdevice(setup.transform.Eto))
+            fname = (stream && !onsave) ? tempname() * "_verify.h5" : nothing
             GC.gc()
             # On a device the array library's pool is not returned by GC alone, so
             # successive points would accumulate it until the card fills.
@@ -1967,7 +2209,8 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
             out = Base.invokelatest(simulate_delay_point, setup, τi;
                                     zsave=zvec, init_dz=init_dz,
                                     rtol=rtol, max_dz=max_dz, norm=norm,
-                                    twin_period=twin_period, filename=fname)
+                                    twin_period=twin_period, filename=fname,
+                                    extract_on_save=onsave)
             wall = time() - t0
             stream && !isnothing(fname) && rm(fname; force=true)
             point = Dict{String,Any}("scanidx" => idx, "τ" => τi,

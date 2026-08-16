@@ -226,6 +226,69 @@ if have_jlarrays
         @test all(isfinite, od.Iω_win)
     end
 
+    @testset "save-time extraction" begin
+        # The whole point is that no z-slice is ever stored, streamed or transferred:
+        # each is reduced where it is produced. On a device that means the reduction
+        # must run on the DEVICE array — `HostOutput` hands `y` through untouched and
+        # `step_on` makes the interpolant return that same array.
+        sh = TS.build_setup(; base_kwargs...)
+        sd = TS.build_setup(; base_kwargs..., arraytype=JLArray)
+        zv = [0.0, 0.5e-6, 1e-6]
+        kwp = (; zsave=zv, init_dz=5e-7, rtol=1e-8)
+
+        # On the host the new route reuses the same kernels on the same arrays, so it
+        # must be BIT-identical to saving the stack and reducing afterwards. This is the
+        # guarantee that lets it be switched on for a validated CPU campaign.
+        a = TS.simulate_delay_point(sh, 0.5e-15; kwp...)
+        b = TS.simulate_delay_point(sh, 0.5e-15; kwp..., extract_on_save=true)
+        for k in keys(a)
+            @test a[k] == b[k]
+        end
+
+        # ...and on a device it agrees to rounding (the sums are formed in a different
+        # order), which is the standard everywhere else on the device path.
+        d = TS.simulate_delay_point(sd, 0.5e-15; kwp...)   # defaults ON for a device
+        @test isapprox(d.Iω_win, a.Iω_win; rtol=1e-10)
+        @test isapprox(d.Iω_win_reimaged, a.Iω_win_reimaged; rtol=1e-10)
+        @test isapprox(d.Iω_full, a.Iω_full; rtol=1e-10)
+        @test d.zsave ≈ a.zsave
+        # explicitly disabling it must fall back to the save-the-stack route
+        d0 = TS.simulate_delay_point(sd, 0.5e-15; kwp..., extract_on_save=false)
+        @test isapprox(d0.Iω_win, d.Iω_win; rtol=1e-10)
+
+        # The handler must hold no field-sized data: that is the memory claim.
+        o = TS.TraceExtractOutput(sd, zv, JLArray)
+        @test Utils.backend(o.wsgn[1]) isa Utils.DeviceBackend
+        @test size(o.Iω_full) == (length(sd.grid.ω), length(zv))
+        # Luna must neither refuse the run for statistics nor copy `y` every step.
+        @test TS.Luna.nostats_only(o)
+        @test !TS.Luna.needs_host_y(o)
+
+        # Folding the sign into the window is what lets ONE array serve both windowed
+        # reductions; squaring it must give back the unsigned window.
+        w = sd.window_array
+        @test Array(o.wsgn[1]).^2 ≈ (ndims(w) == 3 ? w : reshape(w, 1, size(w)...)).^2
+    end
+
+    @testset "save-time extraction with several windows" begin
+        # The multi-window path assembles a different NamedTuple; check the two routes
+        # agree key for key rather than just on the first window.
+        wins = [TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3, holediam=0.25e-3,
+                                      zmask=0.1, apod=:supergauss, apod_param=16),
+                TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3, holediam=0.35e-3,
+                                      zmask=0.1, apod=:supergauss, apod_param=16)]
+        mw = merge(base_kwargs, (; window=wins))
+        sh = TS.build_setup(; mw...)
+        zv = [0.0, 1e-6]
+        a = TS.simulate_delay_point(sh, 0.3e-15; zsave=zv, init_dz=5e-7, rtol=1e-8)
+        b = TS.simulate_delay_point(sh, 0.3e-15; zsave=zv, init_dz=5e-7, rtol=1e-8,
+                                    extract_on_save=true)
+        @test keys(a) == keys(b)
+        for k in keys(a)
+            @test a[k] == b[k]
+        end
+    end
+
     @testset "simulate_delay_point on device" begin
         # The acceptance check for the ModelPNPS side: a whole delay point, propagation
         # and extraction, on a device array versus the host.
