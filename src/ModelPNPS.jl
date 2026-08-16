@@ -647,7 +647,12 @@ the beam type.
 function build_beamlets(beam::HE11Beam, grid::Grid.EnvGrid,
                          xygrid::Grid.FreeGrid, geom, Eω::AbstractVector,
                          energy::Real, energyfun_ω;
-                         apod::Symbol=:supergauss, apod_param=nothing)
+                         apod::Symbol=:supergauss, apod_param=nothing,
+                         ϕ=nothing)
+    # `ϕ` is accepted for a uniform interface and deliberately IGNORED: this
+    # builder derives its beamlets from the 1-D reference `Eω`, which already
+    # carries the Taylor spectral phase applied in `build_setup`. Applying ϕ
+    # again here would double the chirp.
     # Full beam (no mask) in k-space, rescaled to the requested energy.
     Eωk0 = build_he11_kspace(grid, xygrid, beam, Eω)
     Eωk0 .*= sqrt(energy) / sqrt(energyfun_ω(Eωk0))
@@ -693,11 +698,28 @@ end
 function build_beamlets(beam::GaussianBeam, grid::Grid.EnvGrid,
                          xygrid::Grid.FreeGrid, geom, Eω::AbstractVector,
                          energy::Real, energyfun_ω;
-                         apod::Symbol=:supergauss, apod_param=nothing)
+                         apod::Symbol=:supergauss, apod_param=nothing,
+                         ϕ=nothing)
     # In the Gaussian model each beamlet carries an equal third of the energy.
     energy_per_beam = energy / 3
     Eωk_base = build_gaussian_kspace(grid, xygrid, beam,
                                      geom.λ0, geom.τfwhm, energy_per_beam)
+    # Apply the input spectral phase (GDD/TOD) HERE rather than inheriting it
+    # from the 1-D reference `Eω`, which this builder does not use.
+    # `Fields.GaussGaussField` takes a ϕ, but for a SpatioTemporalField that ϕ
+    # is a SCALAR carrier-envelope phase (`exp(i(ϕ + Δω t))`), not the Taylor
+    # coefficient VECTOR that the 1-D `GaussField` accepts — so it cannot carry
+    # GDD at all, and a chirp requested through `build_setup` would otherwise be
+    # silently dropped for this beam type.
+    #
+    # Applying it as a pure spectral phase is exact here: the Gaussian
+    # transverse profile is ω-independent by construction (that is the whole
+    # point of this beam), so the spectral phase commutes with the spatial
+    # structure. It would NOT be exact for a chromatic beam, which is why the
+    # HE11 builder instead inherits the already-chirped `Eω`.
+    if ϕ !== nothing && any(!iszero, ϕ)
+        Fields.prop_taylor!(Eωk_base, grid, ϕ, geom.λ0)
+    end
     Eωxy = ifft(Eωk_base, (2, 3))
 
     # Crossing geometry derived from the mask parameters.
@@ -966,7 +988,7 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     geom = (; mask_diam, mask_spacing, f_foc=beam.f_foc, λ0, τfwhm)
     Eωk_g1, Eωk_g2, Eωk_t_base, _Iω_beamlet, beam_meta =
         build_beamlets(beam, grid, xygrid, geom, Eω, energy, energyfun_ω;
-                       apod=apod, apod_param=apod_param)
+                       apod=apod, apod_param=apod_param, ϕ=ϕ)
 
     # --- Build signal window(s) -------------------------------------------
     window_array, window_suffix = _build_window_set(window, grid, xygrid; λ0=λ0)
