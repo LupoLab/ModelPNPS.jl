@@ -1389,23 +1389,17 @@ function TraceExtractOutput(setup::TGFROGSetup, zvec::AbstractVector, arraytype)
                        zeros(Float64, Nω, nz))
 end
 
+# `Output.foreach_save` runs the body once per data point the save condition asks for and
+# advances `o.saved`; the loop itself is Luna's, so this handler cannot drift from the
+# built-in ones. `Ez` is the solver's own array — `Luna.needs_host_save` above declines
+# the copy, and `RK45.interpolate` returns the stepped solution itself at a step boundary
+# rather than evaluating the dense-output polynomial.
 function (o::TraceExtractOutput)(y, t, dt, yfun)
-    save, ts = o.save_cond(y, t, dt, o.saved)
-    while save
-        # `step_on` is pinned to the save positions, so the interpolant snaps to the step
-        # endpoint and hands back `y` itself (`Luna.RK45.interpolate`). Taking `y`
-        # directly is then not an approximation but the same array — and on a device it
-        # avoids the device-to-host copy `HostOutput` would otherwise make. The test
-        # mirrors Luna's own endpoint snap; if a caller ever saves off a step boundary we
-        # fall back to the interpolant (correct, just copied to the host first).
-        Ez = abs(ts - t) <= 4*eps(abs(t)) ? y : yfun(ts)
-        o.saved += 1
-        iz = o.saved
+    Output.foreach_save(o, y, t, dt, yfun) do iz, ts, Ez
         iz <= o.nz || error("TraceExtractOutput: more saves ($iz) than the $(o.nz) " *
                             "zsave positions it was built for")
         _reduce_slice!(o, Ez, iz)
         push!(o.zs, ts)
-        save, ts = o.save_cond(y, t, dt, o.saved)
     end
 end
 
@@ -1414,14 +1408,16 @@ end
 
 Reduce one saved slice into column `iz`, routing on where the slice actually is.
 
-A device propagation still delivers ONE slice on the host: `z = 0` is the step *start*,
-not an endpoint, so `Luna.run` reaches it through the interpolant and `HostOutput` copies
-it. Rather than uploading that slice back (or keeping a second, host-resident signed
-window), a host-resident slice goes through the original
+A device propagation delivers every slice on the device — including `z = 0`, which is the
+step *start* rather than an endpoint and so comes through the interpolant, because
+`Luna.needs_host_save` declines the copy `HostOutput` would otherwise make.
+
+The host branch therefore serves a **host** propagation (`extract_on_save=true` on the
+CPU), and any save that is genuinely interpolated. It goes through the original
 [`extract_signal_spectra`](@ref)/[`_quadrant_spectrum!`](@ref) kernels against the plain
-host window the setup already holds. That costs no extra memory and no transfer, and it
-makes the host result bit-identical to the save-the-stack route by construction rather
-than by a parallel implementation that could drift.
+host window the setup already holds: no extra memory, no transfer, and the host result is
+bit-identical to the save-the-stack route by construction rather than by a parallel
+implementation that could drift.
 """
 function _reduce_slice!(o::TraceExtractOutput, Ez, iz)
     if Luna.Utils.isdevice(Ez)
@@ -1448,11 +1444,16 @@ Output.willsave(o::TraceExtractOutput, y, t, dt) = first(o.save_cond(y, t, dt, o
 
 # `Luna.run` refuses a device propagation with statistics, because a statistics function
 # is called with the state on every step and would force a full transfer each time. This
-# handler collects none, so it opts out on its own type — no change in Luna.
+# handler collects none, so it opts out on its own type.
 Luna.nostats_only(::TraceExtractOutput) = true
-# Belt and braces: `HostOutput` must not copy `y` per step for us (this is already the
-# generic default, but the whole design depends on it).
+# `HostOutput` must not copy `y` per step for us (already the generic default, but the
+# whole design depends on it)...
 Luna.needs_host_y(::TraceExtractOutput) = false
+# ...nor allocate a host buffer and copy each SAVE into it: we reduce on the device and
+# keep only (Nω,) results. Declining this hands over the solver's own array untouched,
+# which also removes the one slice that used to come back on the host (`z = 0`, reached
+# through the interpolant because it is the step start rather than an endpoint).
+Luna.needs_host_save(::TraceExtractOutput) = false
 
 """
     _trace_results(setup, o::TraceExtractOutput) -> NamedTuple
