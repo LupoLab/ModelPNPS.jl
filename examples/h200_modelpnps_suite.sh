@@ -17,8 +17,9 @@
 #   accuracy  GPU-only: the two extraction routes against each other, and
 #             production rtol against a decade tighter                     ~3-8 min
 #   bench     GPU delay points at the production shapes                    ~5-20 min
-#   scan      a real short delay scan through run_scan, then the same
-#             split across processes sharing the card                      ~10-20 min
+#   scan      a real short delay scan through run_scan, one process        ~5-15 min
+#   share     OPT-IN saturation diagnostic: the same points split across processes
+#             sharing the card. NOT in the default steps — see below.       ~5-10 min
 #
 # USAGE (on the pod):
 #   bash /workspace/code/ModelPNPS.jl/examples/h200_modelpnps_suite.sh
@@ -37,6 +38,25 @@
 # `accuracy` needs no CPU reference — host-vs-device is covered by the hardware-gated
 # CUDA testset (small grids) and, at production scale, by verify_against_collected
 # against a bit-identical CPU reference on the HPC.
+#
+# ONE PROCESS, OR SEVERAL SHARING THE CARD?
+#   One process running points sequentially is the right model here, and it is what
+#   `run_scan` with `Scans.LocalExec` already does. The `share` step exists to CHECK
+#   that, not because it is the recommended way to run a campaign.
+#
+#   Luna's modal suite does share a card across processes, and should: its kernels are
+#   ~0.5M elements (nt 8192 × 65 nodes), so the GPU is idle between launches and a
+#   second process fills real gaps. A 3-D free-space delay point is ~151M elements per
+#   kernel — 300× larger — so one point already saturates the memory system, and a
+#   second process only splits the same bandwidth while adding a second CUDA context
+#   (~300-500 MB, its own cuFFT plans, its own Julia compilation).
+#
+#   Note also that without the MPS daemon (nvidia-cuda-mps-control) separate processes
+#   are TIME-SLICED, not co-scheduled: the driver switches contexts rather than running
+#   their kernels together. So `share` measures interleaving plus overhead. If it does
+#   show a real gain, the right response is NOT more processes but per-task CUDA streams
+#   inside one process (CUDA.jl gives each Julia task its own stream) — which would need
+#   one setup and one set of buffers per task, so k × 10 field copies, and is new work.
 #
 # CONCURRENCY WITH THE MODAL SUITE
 #   Both fit: the modal cases are ≲ 8 GiB, these are 16-40 GiB, against 141 GiB on an
@@ -58,9 +78,8 @@
 #     the `04` shape measured 4.6 min/point and exactly 22.5 GiB there.
 #   * scan: s/point INCLUDING setup and scansave — that is the number to multiply by
 #     the delay count when sizing a campaign, not the benchmark's.
-#   * the NPROC run: total throughput, not per-point time. If the card is
-#     bandwidth-bound, sharing it gains little and the per-point times will simply
-#     stretch; if it gains, the campaign should pack several points per card.
+#   * share (if run): TOTAL THROUGHPUT, not per-point time. The expected answer is
+#     "no meaningful gain" — see below. A gain would be the surprise.
 # =============================================================================
 set -uo pipefail
 
@@ -70,7 +89,7 @@ LUNA="${LUNA:-/workspace/code/Luna.jl}"
 DEV="${DEV:-/workspace/code/dev}"
 STAMP=$(date +%Y%m%d-%H%M%S)
 RUNDIR="${RUNDIR:-/workspace/runs/h200-pnps-$STAMP}"
-STEPS="${STEPS:-pkgs,tests,accuracy,bench,scan}"
+STEPS="${STEPS:-pkgs,tests,accuracy,bench,scan}"   # `share` is opt-in, see header
 CASES="${CASES:-dd05,04,dd20,100um}"
 POINTS="${POINTS:-1}"
 SCAN_CASE="${SCAN_CASE:-dd05}"
@@ -134,7 +153,10 @@ if has scan; then
          SCAN_OUT="$RUNDIR/scan_1proc" \
          julia --project="$DEV" "$PNPS/examples/h200_scan_rehearsal.jl"
 
-    step "scan rehearsal: the same points split across $NPROC processes sharing the GPU"
+fi
+
+if has share; then
+    step "saturation check: the same points split across $NPROC processes sharing the GPU"
     # Each process pays its own compilation, so compare the per-point lines rather
     # than the wall clock. Device memory is the constraint: NPROC × 10 × field size
     # must fit, and nvidia-smi below is the check that it did.
@@ -146,7 +168,10 @@ if has scan; then
             > "$RUNDIR/scan_${NPROC}proc_$i.log" 2>&1 &
     done
     wait
-    echo "$NPROC processes: wall $((SECONDS-T0)) s"
+    echo "$NPROC processes: wall $((SECONDS-T0)) s for the same $SCAN_POINTS points"
+    echo "Compare against the one-process scan wall above: if the card was already"
+    echo "saturated these are about equal (and the per-point times below have simply"
+    echo "stretched by ~$NPROC×). Each process also paid its own compilation."
     grep -h "scan wall\|per point" "$RUNDIR"/scan_${NPROC}proc_*.log || true
     echo "GPU memory now:"; nvidia-smi --query-gpu=memory.used,memory.total --format=csv || true
 fi

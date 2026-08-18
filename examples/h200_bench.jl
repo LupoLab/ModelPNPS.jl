@@ -187,6 +187,8 @@ end
 # ============================================================================ #
 #  BENCH — GPU delay points at production shapes
 # ============================================================================ #
+const SUMMARY = Tuple{String,Float64,Float64}[]
+
 function run_bench()
     println("\n=== bench: GPU delay points at production shapes ===")
     isempty(OUT) || csv_row(OUT, ["case","N","Nomega","field_GiB","point","wall_s",
@@ -214,17 +216,36 @@ function run_bench()
                                                  extract_on_save=(EXTRACT != "off"))
             dev = f0 - devfree()
             host = Sys.maxrss()/2^30
-            @printf("    point %d  τ %+7.2f fs   wall %7.1f s   device %5.1f GiB   host %5.1f GiB\n",
-                    ip, τ*1e15, t, dev, host)
+            # Cost per GiB of state is the saturation signal: a delay point's work is
+            # proportional to the field size at fixed step count, so if the card is
+            # saturated this is roughly CONSTANT across cases whose fields differ by
+            # 2.6×. If it falls as the field grows, the smaller cases are not filling
+            # the card and there is headroom to exploit (see the suite's `share` step).
+            @printf("    point %d  τ %+7.2f fs   wall %7.1f s   device %5.1f GiB   host %5.1f GiB   %6.2f s/GiB\n",
+                    ip, τ*1e15, t, dev, host, t/field_gib(Nω, c.N))
+            push!(SUMMARY, (name, field_gib(Nω, c.N), t))
             csv_row(OUT, [name, c.N, Nω, gib(field_gib(Nω, c.N)), ip, round(t; digits=2),
                           gib(dev), gib(host), EXTRACT != "off"])
         end
         setup = nothing; GC.gc(); Luna.device_reclaim()
     end
-    println("\n  A 200-point scan at s/point: multiply the per-point wall by 200.")
-    println("  Device memory should be ≈ 10 × the field size (9 solver registers +")
-    println("  1 transform buffer); more than that means the cuFFT workspace is not")
-    println("  negligible at this shape, which changes how many points fit at once.")
+    println("\n  Device memory should be ≈ 10 × the field size (9 solver registers + 1")
+    println("  transform buffer); more means the cuFFT workspace is not negligible at")
+    println("  that shape, which changes how many points fit on the card at once.")
+    if length(SUMMARY) > 1
+        println("\n  saturation check — cost per GiB of state across cases:")
+        println("    case       field GiB    wall s    s/GiB     scan (200 pts)")
+        for (nm, f, t) in SUMMARY
+            @printf("    %-10s %8.2f %9.1f %8.2f     %5.1f min\n", nm, f, t, t/f, 200t/60)
+        end
+        v = [t/f for (_, f, t) in SUMMARY]
+        spread = maximum(v) / minimum(v)
+        @printf("    s/GiB spread %.2f× — %s\n", spread,
+                spread < 1.3 ? "flat: the card is saturated at every shape, so cost is pure\n" *
+                               "                       traffic and running points concurrently will not help" :
+                               "NOT flat: the smaller shapes are leaving the card idle;\n" *
+                               "                       there is headroom, run the suite's `share` step")
+    end
 end
 
 # ---------------------------------------------------------------------- main --
