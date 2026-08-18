@@ -140,9 +140,13 @@ function run_accuracy()
                                                extract_on_save=true)
     t2 = @elapsed o2 = TS.simulate_delay_point(setup, τ; zsave=c.zsave, SOLVER...,
                                                extract_on_save=false)
-    @printf("   on-save %.1f s   save-the-stack %.1f s   (the difference is the %d× %.2f GiB\n" *
-            "   of temp-file traffic the on-save route does not do)\n",
-            t1, t2, length(c.zsave), field_gib(Nω, c.N))
+    # NB `@printf` reads its format at MACRO-EXPANSION time, so it must be a single
+    # string literal — a `"a" * "b"` concatenation is an expression and fails at include
+    # time, taking the whole script with it. Split long messages into separate calls.
+    @printf("   on-save %.1f s   save-the-stack %.1f s\n", t1, t2)
+    @printf("   (the difference is the %d × %.2f GiB of temp-file traffic the on-save\n",
+            length(c.zsave), field_gib(Nω, c.N))
+    println("    route does not do)")
     for k in keys(o1)
         k === :zsave && continue
         r = maximum(abs.(o1[k] .- o2[k])) / maximum(abs, o2[k])
