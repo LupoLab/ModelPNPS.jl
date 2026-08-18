@@ -197,6 +197,19 @@ function run_bench()
     println("\n=== bench: GPU delay points at production shapes ===")
     isempty(OUT) || csv_row(OUT, ["case","N","Nomega","field_GiB","point","wall_s",
                                   "device_GiB","host_GiB","extract_on_save"])
+    # Warm up FIRST. CUDA kernels compile per TYPE, not per size, so a tiny propagation
+    # compiles everything the real cases need for a couple of seconds. Without this the
+    # first case carries ~11 s of compilation and reads as 2-3x slower than it is —
+    # which is exactly what happened on the first H200 run.
+    print("    warm-up (compiles the device kernels): ")
+    let wa = setup_args_for(gap_mm=1.0, N=32, trange=110e-15, thickness=40e-6)
+        tw = @elapsed begin
+            ws = TS.build_setup(; wa..., arraytype=CUDA.CuArray)
+            TS.simulate_delay_point(ws, 0.0; zsave=[0.0, 40e-6], SOLVER...)
+        end
+        @printf("%.1f s\n", tw)
+    end
+    GC.gc(); Luna.device_reclaim()
     for name in CASE_NAMES
         haskey(CASES, name) || (println("unknown case $name, skipping"); continue)
         c = CASES[name]
