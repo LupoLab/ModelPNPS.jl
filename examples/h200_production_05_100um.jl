@@ -7,15 +7,21 @@
 # any of them without changing it there too.
 #
 #   λ0 260 nm, 1 fs, 0.1 µJ into 100 µm SiO2, boxcars gap 1.0 mm, R = 366 µm,
-#   N = 640, trange = 220 fs (→ Nω = 512), τ = ±30 fs in 241 points,
-#   10 z-slices, rtol = 1e-7, max_dz = 2 µm, apodisation at the saves only.
+#   N = 768, trange = 220 fs (→ Nω = 512), τ = ±30 fs in 241 points,
+#   10 z-slices, rtol = 1e-7, max_dz = 2 µm, apodisation at the saves only,
+#   and the DEFAULT `weaknorm` — `signal_quadrant_norm` was written for this run,
+#   measured against it, and the measurement argued against it (F39).
 #
 # WHAT DIFFERS FROM THE HPC VERSION, AND WHY
 #   * `arraytype = CUDA.CuArray` and `Scans.LocalExec()`: one process, one card,
-#     points in sequence. Measured on an H200, one delay point of this shape is
-#     ~21 s and holds 32.8 GiB of the card's 140 GiB. Running several points
-#     concurrently would not help — cost per GiB of state is flat across shapes,
-#     i.e. one point already saturates the memory system.
+#     points in sequence. Running several points concurrently would not help —
+#     cost per GiB of state is flat across shapes, i.e. one point already
+#     saturates the memory system.
+#   * H200 ONLY at this grid. Scaling the measured N=640 point (3.12 GiB field,
+#     85 steps, 20.5 s, 32.8 GiB device) by the flat 0.0771 s/step/GiB gives, at
+#     N=768: field 4.50 GiB, ~30 s/point, **~47 GiB resident** — which does NOT
+#     fit an A40's 44.4 GiB. Host peak is ~20 GiB (four beamlet fields plus the
+#     window, transiently, in build_setup).
 #   * No FFTW wisdom pre-generation. The 3-D host plan the HPC script needs is
 #     never built on the device path (`Luna.setup` skips it when the caller
 #     supplies the state), so the mandatory pre-step in that script's header does
@@ -56,6 +62,15 @@ import CUDA
 import Printf: @printf
 import Dates
 
+# Matched to the production script. On the device path these barely matter — the HE11
+# builder is Bessel functions and broadcasts, not FFTs, and `Luna.setup` skips the 3-D
+# host plan entirely when the caller supplies the state, so only the 1-D length-Nω plan
+# is affected. Set anyway so the two scripts differ in nothing but the execution.
+# No wisdom pre-generation is needed here for the same reason (see the header).
+
+Luna.set_fftw_mode(:measure)
+Luna.set_fftw_threads(4)
+
 NPTS  = parse(Int, get(ENV, "PROD_POINTS", "241"))
 ATYPE = get(ENV, "PROD_ARRAYTYPE", "cuda")
 NAME  = get(ENV, "PROD_NAME", "tgfrog_kerr_rtol7_sw_gap1000um_tanh_1fs_100umUVFS")
@@ -82,7 +97,7 @@ mask_spacing = GAP
 d            = mask_spacing/2 + mask_diam/2
 
 const R_GRID = 366.0e-6
-const N_GRID = 640
+const N_GRID = 768
 
 beam   = TS.HE11Beam(a, f_coll, f_foc)
 window = TS.PhysicalMaskWindow(holex=-d, holey=-d, holediam=0.5e-3,
@@ -113,10 +128,11 @@ zsave = [0.0, 2.0, 4.0, 8.0, 9.5, 16.0, 25.0, 40.0, 60.0, 100.0] .* 1e-6
 if ATYPE == "cuda"
     dv = CUDA.device()
     @printf("device %s   %.1f GiB total\n", CUDA.name(dv), CUDA.total_memory()/2^30)
-    @printf("one point of this shape measured at ~21 s and 32.8 GiB on an H200\n")
+    @printf("expect ~30 s and ~47 GiB per point at N=768 (extrapolated from the\n")
+    @printf("measured N=640 point: 20.5 s, 32.8 GiB; cost is linear in field size)\n")
 end
-@printf("estimate: %.1f h for %d points (at ~21 s/point + ~1 min setup)\n",
-        (NPTS*21.5 + 60)/3600, NPTS)
+@printf("estimate: %.1f h for %d points (at ~30 s/point + ~1 min setup)\n",
+        (NPTS*30.0 + 60)/3600, NPTS)
 println("started $(Dates.now())\n")
 flush(stdout)
 
@@ -124,6 +140,11 @@ t0 = time()
 TS.run_scan(setup_args, τ; scan_name=NAME, exec=Scans.LocalExec(),
             zsave=zsave, init_dz=5e-7, rtol=1e-7, max_dz=2e-6,
             twin_period=TWIN_SAVES_ONLY,
+            # Redundant with the top-level setters above for a single LocalExec
+            # process — they exist so `procs` workers, which never run the script's
+            # top level, still get them. Passed anyway so this differs from
+            # 05_production_100um.jl in nothing but the execution.
+            fftw_threads=4, fftw_mode=:measure,
             skip_existing=true)
 wall = time() - t0
 

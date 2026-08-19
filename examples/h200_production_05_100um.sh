@@ -11,7 +11,7 @@
 #
 #   bash /workspace/code/Luna.jl/test/manual/runpodcoldstart.sh
 #
-# Then, from a tmux session so an SSH drop does not kill a 1.5 h run:
+# Then, from a tmux session so an SSH drop does not kill a ~2 h run:
 #
 #   tmux new -s prod05
 #   bash /workspace/code/ModelPNPS.jl/examples/h200_production_05_100um.sh
@@ -68,8 +68,9 @@ echo "run dir  $RUNDIR"
 echo "log      $LOG"
 echo
 
-# One point of this shape measured at ~21 s / 32.8 GiB on an H200, so 241 points
-# is ~1.5 h. The script prints its own estimate and resumes if interrupted.
+# At N=768 expect ~30 s and ~47 GiB per point, so 241 points is ~2.1 h. That
+# resident footprint does NOT fit an A40 (44.4 GiB) — this grid is H200-only.
+# The script prints its own estimate and resumes if interrupted.
 julia --project="$DEV" "$PNPS/examples/h200_production_05_100um.jl"
 rc=$?
 
