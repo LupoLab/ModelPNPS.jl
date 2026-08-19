@@ -972,6 +972,43 @@ end
     end
 end
 
+@testset "run_scan skip_existing (resume)" begin
+    # scansave allocates the full (Nω, nz, Nτ) up front and fills points in, so an
+    # all-zero slice means "not yet computed". Resume depends on that, and on
+    # BatchExec preserving the ORIGINAL scanidx (RangeExec renumbers, which would
+    # write points into the wrong slots).
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3, holediam=0.25e-3,
+                                    zmask=0.1, apod=:supergauss, apod_param=16)
+    sa = (; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6, thickness=1e-6, material=:SiO2,
+            mask_diam=1.0e-3, mask_spacing=0.5e-3, beam, window,
+            trange=20e-15, λlims=(200e-9, 400e-9), R=40e-6, N=32)
+    mktempdir() do tmpdir
+        cd(tmpdir) do
+            τ = [-1e-15, 0.0, 1e-15]
+            @test isempty(TS._completed_scanidcs("res"))      # no file yet
+            TS.run_scan(sa, τ; scan_name="res", exec=Luna.Scans.BatchExec(2, 1),
+                        zsave=2, init_dz=5e-7, rtol=1e-6)
+            partial = HDF5.h5open(f -> read(f["Iω_win"]), "res_collected.h5", "r")
+            done = TS._completed_scanidcs("res")
+            @test done == Set([1, 3])                          # batch 1 of 2
+            @test all(any(!iszero, partial[:, :, i]) for i in done)
+            @test !any(!iszero, partial[:, :, 2])
+
+            TS.run_scan(sa, τ; scan_name="res", exec=Luna.Scans.LocalExec(),
+                        zsave=2, init_dz=5e-7, rtol=1e-6, skip_existing=true)
+            full = HDF5.h5open(f -> read(f["Iω_win"]), "res_collected.h5", "r")
+            @test TS._completed_scanidcs("res") == Set([1, 2, 3])
+            # The skipped points must be left exactly as they were, not recomputed.
+            for i in done
+                @test partial[:, :, i] == full[:, :, i]
+            end
+            # ...and without skip_existing the same call recomputes everything.
+            @test length(TS._completed_scanidcs("res")) == 3
+        end
+    end
+end
+
 @testset "streamed output equals in-memory output" begin
     beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
     window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,

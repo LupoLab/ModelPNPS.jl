@@ -1975,6 +1975,29 @@ end
 # ============================================================================
 
 """
+    _completed_scanidcs(scan_name) -> Set{Int}
+
+Scan indices already present in `<scan_name>_collected.h5`, i.e. those whose trace data
+is not all zero. An empty set if the file does not exist yet.
+
+Reads one point at a time: the file may be large and this runs before any propagation.
+"""
+function _completed_scanidcs(scan_name::AbstractString)
+    fn = scan_name * "_collected.h5"
+    isfile(fn) || return Set{Int}()
+    done = Set{Int}()
+    HDF5.h5open(fn, "r") do f
+        ks = filter(k -> startswith(k, "Iω"), collect(keys(f)))
+        isempty(ks) && return
+        d = f[first(ks)]
+        for i in 1:size(d, 3)
+            any(!iszero, d[:, :, i]) && push!(done, i)
+        end
+    end
+    return done
+end
+
+"""
     run_scan(setup, τs;
              scan_name, exec,
              nz=2, zsave=nz, init_dz=5e-7, rtol=1e-6, max_dz=0.0,
@@ -2016,8 +2039,17 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
                   fftw_mode::Symbol=:estimate,
                   stream::Bool=true,
                   extract_on_save::Union{Nothing,Bool}=nothing,
+                  skip_existing::Bool=false,
                   extra_outputs::Function=(out)->NamedTuple())
     scan = Scans.Scan(scan_name, exec; τ=τs)
+    # Resume: `Output.scansave` allocates the full (Nω, nz, Nτ) datasets up front and
+    # fills points in as they complete, so an all-zero slice IS the marker for "not yet
+    # computed" — the same test `verify_against_collected` uses. Skipping those indices
+    # lets an interrupted scan continue where it stopped, which matters when the machine
+    # is rented by the hour.
+    done_idcs = skip_existing ? _completed_scanidcs(scan_name) : Set{Int}()
+    isempty(done_idcs) || @info "resuming: skipping $(length(done_idcs)) completed " *
+                                "point(s) of $(length(τs)) in $(scan_name)_collected.h5"
     # LAZY SETUP: everything expensive — building the multi-GB beamlet arrays,
     # planning the FFTs, resolving metadata — happens inside the scan closure,
     # on the FIRST point this process executes. At submission time
@@ -2030,6 +2062,9 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
     cg = nothing
     normx = nothing
     Luna.runscan(scan) do scanidx, τi
+        # Before anything else, including building the setup: a resumed scan should pay
+        # nothing at all for a point it already has.
+        scanidx in done_idcs && return nothing
         if setup === nothing
             # Per-process FFTW threading, applied exactly where the plans are
             # created. In `procs` (multi-worker) scans the workers never
