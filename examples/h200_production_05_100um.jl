@@ -24,12 +24,22 @@
 #     an interrupted run resumes where it stopped. On rented hardware that is the
 #     difference between losing minutes and losing the whole scan.
 #
-# RUN IT DETACHED — this takes ~1.5 h and an SSH drop would otherwise kill it:
-#   cd /workspace/runs && mkdir -p prod05 && cd prod05
+# HOW TO RUN IT — use the launcher, which sources /workspace/env.sh, checks the
+# prerequisites and logs. This takes ~1.5 h, so run it detached:
+#
+#   bash /workspace/code/Luna.jl/test/manual/runpodcoldstart.sh    # if not yet, or to pull
 #   tmux new -s prod05
+#   bash /workspace/code/ModelPNPS.jl/examples/h200_production_05_100um.sh
+#   # detach with C-b d; reattach with `tmux attach -t prod05`
+#
+# By hand instead, note that `source /workspace/env.sh` is NOT optional: without
+# it `julia` is not on PATH and JULIA_DEPOT_PATH points at container disk, so
+# everything silently re-resolves into storage that is wiped on terminate.
+#
+#   source /workspace/env.sh
+#   cd /workspace/runs/prod05
 #   julia --project=/workspace/code/dev \
 #         /workspace/code/ModelPNPS.jl/examples/h200_production_05_100um.jl 2>&1 | tee prod05.log
-#   # detach with C-b d; reattach with `tmux attach -t prod05`
 #
 # Re-running in the same directory resumes. To start over, delete
 # tgfrog_kerr_rtol7_sw_gap1000um_tanh_1fs_100umUVFS_collected.h5.
