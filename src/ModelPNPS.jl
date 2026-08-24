@@ -1716,10 +1716,20 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
         # holding the (ω, ky, kx, z) stack in memory (~2.15 GB × nz at
         # production size); only the extracted (Nω, nz) spectra survive.
         fname = stream ? tempname() * "_pnps.h5" : nothing
-        out = simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz,
-                                     rtol=rtol, max_dz=max_dz, norm=normx,
-                                     twin_period=twin_period, filename=fname)
-        stream && !isnothing(fname) && rm(fname; force=true)
+        # try/finally, not a plain call followed by rm: if the point throws, the
+        # temp file is 36 GB of orphan at production size. run_scan CATCHES the
+        # error per point and moves to the next one, so without this a transient
+        # full disk becomes a permanent one -- each failing point leaks another
+        # file and none of them are ever cleaned. That is what turned an
+        # overflowing /tmp into three scans returning 2-24% of their delays on
+        # 2026-08-24, with every SLURM job still reporting COMPLETED 0:0.
+        out = try
+            simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz,
+                                 rtol=rtol, max_dz=max_dz, norm=normx,
+                                 twin_period=twin_period, filename=fname)
+        finally
+            stream && !isnothing(fname) && rm(fname; force=true)
+        end
         # Return freed field-sized garbage (the point's input array, extraction
         # temporaries) to the allocator before the next point starts — with
         # two workers sharing a tight cgroup, un-collected garbage from one
@@ -1797,11 +1807,16 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
             fname = stream ? tempname() * "_verify.h5" : nothing
             GC.gc()
             t0 = time()
-            out = simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz,
-                                       rtol=rtol, max_dz=max_dz, norm=norm,
-                                       twin_period=twin_period, filename=fname)
+            out = try
+                simulate_delay_point(setup, τi; zsave=zvec, init_dz=init_dz,
+                                     rtol=rtol, max_dz=max_dz, norm=norm,
+                                     twin_period=twin_period, filename=fname)
+            finally
+                # See the note at the streaming call above: a throwing point
+                # must not leave its temp file behind.
+                stream && !isnothing(fname) && rm(fname; force=true)
+            end
             wall = time() - t0
-            stream && !isnothing(fname) && rm(fname; force=true)
             point = Dict{String,Any}("scanidx" => idx, "τ" => τi,
                                      "wall_s" => wall,
                                      "maxrss_GiB" => Sys.maxrss()/2^30)
