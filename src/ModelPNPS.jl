@@ -152,8 +152,20 @@ information is printed via `@info`.
   quantisation).
 """
 function optimal_spatial_grid(f, mask_diam, mask_spacing, λmin, λmax;
-                              n_airy=5, pts_per_lobe=10, safety=1.5, margin=1.1)
-    x_max = mask_spacing/2 + mask_diam     # outermost mask edge from optical axis
+                              n_airy=5, pts_per_lobe=10, safety=1.5, margin=1.1,
+                              geometry::Symbol=:tg)
+    # Outermost extent of the nonlinear k-content, measured in the mask plane.
+    #
+    # :tg  four-hole boxcar. Holes at (+-d, +-d) with d = spacing/2 + diam/2, so
+    #      the outermost edge is spacing/2 + diam, and chi(3) combinations reach
+    #      three times the hole offset (the 3x below).
+    # :sd  two holes on ONE axis at +-s/2, s = spacing + diam. Self-diffraction
+    #      puts the signal at 2k_1 - k_2, i.e. at 3s/2 from the axis — one
+    #      further slot out than the beams themselves — and that, plus a beam
+    #      radius, is the true bound. It is quoted directly rather than as 3x
+    #      an inner radius, so no extra factor of three is applied.
+    x_max = geometry === :sd ? 1.5 * (mask_spacing + mask_diam) + mask_diam/2 :
+                               mask_spacing/2 + mask_diam
     r_airy_max = 1.22 * λmax * f / mask_diam
     r_airy_min = 1.22 * λmin * f / mask_diam
 
@@ -167,7 +179,7 @@ function optimal_spatial_grid(f, mask_diam, mask_spacing, λmin, λmax;
 
     # k-space containment: kmax must exceed the largest FWM nonlinear k-vector
     # (≈ 3 × outermost-hole k, with a safety factor).
-    k_NL_max = safety * 3 * 2π * x_max / (λmin * f)
+    k_NL_max = safety * (geometry === :sd ? 1 : 3) * 2π * x_max / (λmin * f)
     N_from_kspace = 2 * R_min * k_NL_max / π
     @info "N from k-space containment" N_from_kspace
 
@@ -657,6 +669,43 @@ function build_beamlets(beam::HE11Beam, grid::Grid.EnvGrid,
     Eωk0 = build_he11_kspace(grid, xygrid, beam, Eω)
     Eωk0 .*= sqrt(energy) / sqrt(energyfun_ω(Eωk0))
 
+    # --- Self-diffraction: TWO collinear beams --------------------------
+    #
+    # SD is the same propagation and the same chi(3) response; only the input
+    # differs. The signal is 2k_E - k_G, so with the probe E and gate G on one
+    # axis at -+s/2 (s = spacing + diam, centre to centre) the signal appears at
+    # -3s/2 — one further slot out, on the probe's side.
+    #
+    # The layout is SYMMETRIC about the axis (E at -s/2, G at +s/2) rather than
+    # putting E on axis and centring the signal. The centred variant needs a
+    # 27% narrower grid, but cuts the two beams from very different parts of the
+    # HE11 profile, giving them unequal energy; SD's signal is E^2 G*, so that
+    # asymmetry does not cancel.
+    #
+    # Which beam is delayed follows croak's SD kernel E^2 G*: the GATE appears
+    # once, carries the conjugation, and takes the delay — the same convention
+    # as TG, where the delay rides the singly-appearing conjugated arm.
+    if get(geom, :geometry, :tg) === :sd
+        s_cc = geom.mask_spacing + geom.mask_diam
+        Eωk_E = Eωk0 .* makemask(-s_cc/2, 0.0, geom.mask_diam, grid, xygrid;
+                                 zmask=beam.f_foc, apod=apod, apod_param=apod_param,
+                                 λ0_for_default=geom.λ0)
+        Eωk_G = Eωk0 .* makemask( s_cc/2, 0.0, geom.mask_diam, grid, xygrid;
+                                 zmask=beam.f_foc, apod=apod, apod_param=apod_param,
+                                 λ0_for_default=geom.λ0)
+        NyNx_sd = length(xygrid.y) * length(xygrid.x)
+        Iω_bl = dropdims(sum(abs2, Eωk_E; dims=(2, 3)); dims=(2, 3)) ./ NyNx_sd
+        meta_sd = Dict{String,Any}("Iω_beamlet" => Iω_bl, "a" => beam.a,
+                                   "geometry" => "sd",
+                                   "sd_separation_cc" => s_cc,
+                                   "sd_signal_x" => -1.5 * s_cc)
+        # E is the undelayed pair-slot (it appears squared); G takes the delay.
+        # `nothing` for the second gate rather than a zero array: at SD grid
+        # size that array is ~0.5 GB of pure waste, and this campaign has been
+        # OOM-killed by exactly this class of transient before.
+        return Eωk_E, nothing, Eωk_G, Iω_bl, meta_sd
+    end
+
     # Hole centres at (±d, ±d), where d = mask_spacing/2 + mask_diam/2.
     d = geom.mask_spacing/2 + geom.mask_diam/2
 
@@ -908,6 +957,7 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
                        λlims  = (160e-9, 500e-9),
                        R = nothing, N = nothing,
                        apod::Symbol = :supergauss, apod_param = nothing,
+                       geometry::Symbol = :tg,
                        GDD = 0.0, TOD = 0.0,
                        raman::Bool = false, raman_fraction::Float64 = 0.18,
                        raman_impl::Symbol = :batched,
@@ -921,7 +971,8 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     if R === nothing || N === nothing
         f_foc = beam.f_foc
         R, N = optimal_spatial_grid(f_foc, mask_diam, mask_spacing,
-                                     λlims[1], λlims[2]; optimal_grid_kwargs...)
+                                     λlims[1], λlims[2];
+                                     geometry=geometry, optimal_grid_kwargs...)
     end
 
     # --- Build Luna grids --------------------------------------------------
@@ -985,7 +1036,7 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     Eω = Fields.GaussField(; λ0=λ0, τfwhm=τfwhm, energy=energy, ϕ=ϕ)(grid, FT1d)
 
     # --- Build three input beamlets ---------------------------------------
-    geom = (; mask_diam, mask_spacing, f_foc=beam.f_foc, λ0, τfwhm)
+    geom = (; mask_diam, mask_spacing, f_foc=beam.f_foc, λ0, τfwhm, geometry)
     Eωk_g1, Eωk_g2, Eωk_t_base, _Iω_beamlet, beam_meta =
         build_beamlets(beam, grid, xygrid, geom, Eω, energy, energyfun_ω;
                        apod=apod, apod_param=apod_param, ϕ=ϕ)
@@ -1009,7 +1060,7 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
                        typeof(window),typeof(window_array)}(
         λ0, τfwhm, energy, thickness, material, mask_diam, mask_spacing,
         grid, xygrid, linop, transform, FT, energyfun_ω,
-        Eωk_g1 .+ Eωk_g2, Eωk_t_base, Eω,
+        isnothing(Eωk_g2) ? Eωk_g1 : Eωk_g1 .+ Eωk_g2, Eωk_t_base, Eω,
         window, window_array, window_suffix, combined_grid)
 end
 
