@@ -1049,7 +1049,25 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     # over these defaults if the caller supplies their own).
     extra_grid_metadata = merge(Dict{String,Any}(
                                     "raman" => raman ? 1 : 0,
-                                    "raman_fraction" => raman_fraction),
+                                    "raman_fraction" => raman_fraction,
+                                    # The MASK GEOMETRY, recorded so the file is
+                                    # self-describing. Retrieval codes need d/D
+                                    # = (spacing + D)/2D to build the smearing
+                                    # kernel, and until now it was carried by
+                                    # hand from script to script: a sweep run
+                                    # against a gap-1000 trace while still
+                                    # holding the gap-500 default silently built
+                                    # a kernel 25% too narrow, worth ~2% of
+                                    # retrieved duration with NO signature in
+                                    # the trace error. It cannot be recovered
+                                    # reliably after the fact either — the
+                                    # signal-window fields only pin it for some
+                                    # geometries, and for SD the window sits at
+                                    # 1.5s rather than d.
+                                    "mask_diam" => mask_diam,
+                                    "mask_spacing" => mask_spacing,
+                                    "f_foc" => beam.f_foc,
+                                    "geometry" => string(geometry)),
                                 extra_grid_metadata)
     combined_grid = _combined_grid(grid, xygrid, beam_meta,
                                     window, window_array, window_suffix,
