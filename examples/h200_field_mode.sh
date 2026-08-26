@@ -58,10 +58,16 @@ for d in "$PNPS" "$LUNA" "$DEV"; do
 done
 [ -f "$DEV/Manifest.toml" ] || { echo "ERROR: $DEV not instantiated — run runpodcoldstart.sh."; exit 1; }
 
-mkdir -p "$RUNDIR"
+mkdir -p "$RUNDIR" /workspace/logs
 cd "$RUNDIR" || exit 1
-LOG="$RUNDIR/fieldmode-$(date +%Y%m%d-%H%M%S).log"
+STAMP=$(date +%Y%m%d-%H%M%S)
+LOG="$RUNDIR/fieldmode-$STAMP.log"
 exec > >(tee -a "$LOG") 2>&1
+# Same convention as the two suite scripts: a stable symlink to the newest run, and a
+# copy of the log under /workspace/logs so one rsync of that directory takes everything
+# off the pod. This is the run that matters most — hours of rented card — so it should
+# not be the one whose log is hardest to find.
+ln -sfn "$RUNDIR" /workspace/runs/latest-fieldmode
 
 echo "=== field-resolved TG-FROG scan ==="
 echo "host $(hostname)   threads $JULIA_NUM_THREADS   points $FIELD_POINTS   dryrun $PNPS_DRYRUN"
@@ -99,4 +105,5 @@ if [ $rc -eq 0 ]; then
 else
     echo "=== exited with status $rc — rerun this script in the same directory to resume ==="
 fi
+cp -f "$LOG" "/workspace/logs/fieldmode-$STAMP.log" 2>/dev/null || true
 exit $rc
