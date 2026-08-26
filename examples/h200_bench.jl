@@ -175,7 +175,8 @@ function report_budget(name, c; margin=0.92)
     @printf("   one field %.2f GiB\n", bu.field)
     @printf("    budget: state %.1f + Et_win %.1f + Eto %.1f + Eωo %.1f + Pto %.1f",
             bu.state, bu.et_win, bu.eto, bu.ewo, bu.pto)
-    @printf(" + analytic %.1f + window %.1f = %.1f GiB device", bu.analytic, bu.window, bu.device)
+    @printf(" + analytic %.1f + window %.1f + input %.1f = %.1f GiB device",
+            bu.analytic, bu.window, bu.input, bu.device)
     @printf("   (host peak %.1f GiB)\n", bu.host)
     if FIELD && RESPONSE !== :thg
         @printf("    NB %.1f GiB of that (the analytic signal) is allocated on the FIRST\n",
@@ -293,6 +294,10 @@ function run_accuracy()
                                                max_dz=SOLVER.max_dz,
                                                twin_period=SOLVER.twin_period)
     @printf("   rtol 1e-8 took %.1f s (%.2f× the production run)\n", t3, t3/t1)
+    println("   Treat that ratio as a lower bound: t1 is the first point after setup, so it")
+    println("   carries the one-time costs — the production-shape cuFFT plans and, for")
+    println("   :nothg, the analytic-signal buffer. Luna's own \"Propagation finished in\"")
+    println("   lines above are the clean comparison, and they include the step counts.")
     for k in keys(o1)
         k === :zsave && continue
         r = maximum(abs.(o1[k] .- o3[k])) / maximum(abs, o3[k])
@@ -352,11 +357,14 @@ function run_bench()
         GC.gc(); Luna.device_reclaim()
         bu, fits = report_budget(name, c)
         fits || continue
-        free0 = devfree()
+        free_pre = devfree()
         tsetup = @elapsed setup = TS.build_setup(; sa..., arraytype=CUDA.CuArray)
         Nω = length(setup.grid.ω)
-        @printf("    setup %.1f s   device after setup %.1f GiB\n",
-                tsetup, free0 - devfree())
+        # Reclaim before measuring: without it this reads the array library's POOL, which
+        # still holds the state array `Luna.setup` returned and the caller discarded.
+        GC.gc(); Luna.device_reclaim()
+        devsetup = free_pre - devfree()
+        @printf("    setup %.1f s   holds %.1f GiB on the device\n", tsetup, devsetup)
 
         tf0 = NaN; dev0 = NaN     # the τ = 0 point, for the envelope ratio below
         for ip in 1:POINTS
@@ -376,8 +384,14 @@ function run_bench()
             # the card and there is headroom to exploit (see the suite's `share` step).
             @printf("    point %d  τ %+7.2f fs   wall %7.1f s   device %5.1f GiB   host %5.1f GiB   %6.2f s/GiB\n",
                     ip, τ*1e15, t, dev, host, t/field_gib(Nω, c.N))
-            @printf("      predicted %.1f GiB device, measured %.1f — %s\n", bu.device, dev,
-                    abs(dev - bu.device) < 0.1*bu.device ? "as budgeted" :
+            # `dev` is what the POINT adds; the transform's buffers were already
+            # allocated by `build_setup`. The budget is the resident TOTAL, so compare it
+            # against the sum — comparing it against `dev` alone understates by the
+            # setup's share and reads as a large discrepancy that is not there.
+            tot = devsetup + dev
+            @printf("      device: %.1f (setup) + %.1f (point) = %.1f GiB;  budget %.1f — %s\n",
+                    devsetup, dev, tot, bu.device,
+                    abs(tot - bu.device) < 0.1*bu.device ? "as budgeted" :
                     "OFF BY MORE THAN 10 %, the cuFFT workspace is not negligible here")
             ip == 1 && (tf0 = t; dev0 = dev)
             push!(SUMMARY, (name, field_gib(Nω, c.N), t))

@@ -1296,7 +1296,11 @@ end
         actual += 9*Nω*N*N*16          # the RK45 registers
         actual += Nω*N*N*8             # the device-resident extraction window
         @test b.Nω == Nω
-        @test b.device * 2^30 ≈ actual
+        # `input` is the per-delay field from `delayed_input`, which is not a buffer the
+        # setup holds, so account for it separately: here the beamlets are device-side
+        # (three fields), and it is checked against the arrays the setup does hold.
+        @test b.input ≈ 3*Nω*N*N*16 / 2^30
+        @test (b.device - b.input) * 2^30 ≈ actual
         # ...and the structural facts the arithmetic rests on. The two paths encode "the
         # polarisation needs no buffer of its own" differently — the fast path leaves it
         # `nothing`, the general path aliases it to the field — so ask the question, not
