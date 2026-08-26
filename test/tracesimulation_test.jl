@@ -1256,6 +1256,98 @@ end
     @test last(rs) < 2*first(rs)
 end
 
+@testset "beamlet focal profile" begin
+    # The stored truth `Eω_beamlet` is a hybrid — spatially INTEGRATED amplitude with the
+    # 1-D input phase — and neither half necessarily describes what drives the signal, a
+    # three-field product weighted towards the intense centre of the spot. This diagnostic
+    # stores the beamlet's actual spatially resolved focal field so the effective pulse can
+    # be computed instead of assumed.
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    win    = TS.PhysicalMaskWindow(holex=-1.0e-3, holey=-1.0e-3, holediam=0.5e-3,
+                                    zmask=0.1, apod=:tanh)
+    # The production geometry, at reduced N and a short trange: mask_diam and R must be
+    # physically consistent or the profile is of a spot that does not fit its own grid.
+    base = (; λ0=260e-9, τfwhm=1e-15, energy=0.1e-6, thickness=1e-6, material=:SiO2,
+              mask_diam=1.0e-3, mask_spacing=1.0e-3, beam, window=win,
+              apod=:supergauss, apod_param=16, trange=40e-15,
+              λlims=(143e-9, 600e-9), R=366e-6, N=192, store_window=false)
+    s = TS.build_setup(; base...)
+    cg = s.combined_grid
+    g, xy = s.grid, s.xygrid
+
+    @test cg["beamlet_profile"] == 1
+    @test cg["beamlet_r_which"] == "tg_gate1"
+    r  = cg["beamlet_r"]
+    Er = cg["Eω_beamlet_r_re"] .+ 1im .* cg["Eω_beamlet_r_im"]
+    @test length(r) == 64
+    @test size(Er) == (length(g.ω), 64)
+    @test r[1] == 0 && issorted(r)
+    # the hole centre and the tilt coefficient make the file self-describing
+    d = 1.0e-3/2 + 1.0e-3/2
+    @test cg["beamlet_r_holex"] ≈ d && cg["beamlet_r_holey"] ≈ d
+    @test cg["beamlet_r_tilt_coefx"] ≈ d/(PhysData.c*0.1)
+    @test length(cg["beamlet_r_asym"]) == length(g.ω)
+
+    # --- 1. radial closure -------------------------------------------------------
+    # Known a priori: integrating |E(ω,r)|² with the r dr Jacobian must reproduce the
+    # stored Iω_beamlet. If it does not, the centre, the Jacobian or the normalisation is
+    # wrong — which is exactly how this went wrong once already (interpolating the raw
+    # field, ~6 cycles of geometric tilt across the sampling radius, cost 20 % here).
+    δx = xy.x[2]-xy.x[1]; δy = xy.y[2]-xy.y[1]
+    trapz(y, x) = sum((y[i]+y[i+1])/2*(x[i+1]-x[i]) for i in 1:length(x)-1)
+    Iωb = cg["Iω_beamlet"]
+    for λ in (200e-9, 260e-9, 350e-9)
+        iω = argmin(abs.(g.ω .- 2π*PhysData.c/λ))
+        rad = 2π*trapz(abs2.(Er[iω, :]) .* r, r)/(δx*δy)
+        # ~1.5 % short at nr = 64: the Airy wings beyond rmax plus the real azimuthal
+        # asymmetry. Bounded on BOTH sides — too much is as wrong as too little.
+        @test 0.93 < rad/Iωb[iω] < 1.02
+    end
+
+    # --- 2. the width scales as λ ------------------------------------------------
+    # The entire physical point: the focal spot AREA goes as λ², so the on-axis spectrum
+    # is bluer than the integrated one. If this scaling is absent the profile is not
+    # describing an aperture-diffraction pattern and nothing downstream is meaningful.
+    fwhm_of(iω) = (P = abs2.(Er[iω, :]); ih = findfirst(<(maximum(P)/2), P);
+                   isnothing(ih) ? NaN : 2r[ih])
+    λs = (200e-9, 260e-9, 350e-9)
+    ws = [fwhm_of(argmin(abs.(g.ω .- 2π*PhysData.c/λ))) for λ in λs]
+    @test all(isfinite, ws)
+    @test issorted(ws)                                  # wider at longer λ
+    scaled = [w/(λ*0.1/1.0e-3) for (w, λ) in zip(ws, λs)]   # w / (λf/D)
+    @test maximum(scaled)/minimum(scaled) < 1.15        # constant to ~10 %
+
+    # --- 3. azimuthal symmetry is good enough for a radial reduction -------------
+    iω0 = argmin(abs.(g.ω .- 2π*PhysData.c/260e-9))
+    @test 0 < cg["beamlet_r_asym"][iω0] < 0.1
+
+    # --- 4. switchable, and recorded either way ----------------------------------
+    soff = TS.build_setup(; base..., beamlet_profile=false)
+    @test soff.combined_grid["beamlet_profile"] == 0
+    @test !haskey(soff.combined_grid, "beamlet_r")
+    @test !haskey(soff.combined_grid, "Eω_beamlet_r_re")
+    # ...and it does not disturb what was already there
+    for k in ("Iω_beamlet", "Eω_beamlet_re", "Eω_beamlet_im", "It_beamlet")
+        @test isequal(cg[k], soff.combined_grid[k])
+    end
+
+    # --- 5. DIAGNOSTIC ONLY: the propagation cannot see it -----------------------
+    args = (; zsave=2, init_dz=5e-7, rtol=1e-8)
+    on  = TS.simulate_delay_point(TS.build_setup(; base..., thickness=1e-6), 0.5e-15; args...)
+    off = TS.simulate_delay_point(soff, 0.5e-15; args...)
+    for k in (:Iω_win, :Iω_win_reimaged, :Iω_full)
+        @test isequal(getfield(on, k), getfield(off, k))   # bit-identical, not approx
+    end
+
+    # --- 6. the Gaussian beam model carries it too -------------------------------
+    Δk = 2π/260e-9 * sin((1.0e-3/2 + 1.0e-3/2)/0.1)
+    gb = TS.build_setup(; base..., beam=TS.GaussianBeam(8.3e-6, 0.1),
+                          window=TS.PlanckWindow(kxc=-Δk, kyc=-Δk, kwidth=2.5/8.3e-6,
+                                                  pad=1.25))
+    @test gb.combined_grid["beamlet_r_which"] == "gaussian_gate1"
+    @test size(gb.combined_grid["Eω_beamlet_r_re"]) == (length(gb.grid.ω), 64)
+end
+
 @testset "memory_budget matches what is actually allocated" begin
     # `memory_budget` is what the GPU driver and benchmark scripts use to decide whether a
     # shape fits the card, and being wrong there costs an hour of rented GPU and a dead
