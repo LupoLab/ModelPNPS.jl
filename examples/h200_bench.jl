@@ -22,6 +22,10 @@
 #   --points=N              delay points per case (default 1)
 #   --out=FILE              append a CSV row per point
 #   --extract=on|off|both   save-time extraction (default on; `both` A/Bs it)
+#   --accz=N                z-slices for the accuracy A/B (default: the case's full
+#                           ladder). Its reference route holds the whole stack in HOST
+#                           RAM, so a big ladder at a big shape does not fit — the script
+#                           refuses and tells you what N will.
 #   --field=on|off          FIELD-RESOLVED mode (Grid.RealGrid) instead of the envelope
 #   --response=nothg|thg    field-mode nonlinearity (default nothg — see below)
 #   --ffac=6|4              field-mode nonlinear-grid factor (default 6)
@@ -88,6 +92,7 @@ FIELD    = opt("field", "off") == "on"
 RESPONSE = Symbol(opt("response", "nothg"))
 FFAC     = parse(Int, opt("ffac", "6"))
 RATIO    = opt("ratio", FIELD ? "on" : "off") == "on"
+ACCZ     = parse(Int, opt("accz", "0"))     # z-slices for the accuracy A/B; 0 = the case's
 FIELD && RESPONSE in (:nothg, :thg) ||
     FIELD && error("--response must be nothg or thg, got $RESPONSE")
 
@@ -144,6 +149,15 @@ const SOLVER = (; init_dz=5e-7, rtol=1e-7, max_dz=2e-6, twin_period=TWIN_SAVES_O
 
 field_gib(Nω, N) = 16 * Nω * N * N / 2^30
 devfree() = (s = Luna.device_memory_status(); isnothing(s) ? NaN : s[1]/2^30)
+
+"""
+HOST memory available, in GiB. `Sys.total_memory()` reports the whole machine from inside
+a container, not the cgroup slice — the same lie that makes `JULIA_NUM_THREADS=auto`
+start 190 threads on a 24-vCPU pod — so prefer `POD_MEM_GB`, which the pod's env.sh
+exports from the cgroup. Falls back to `Sys.total_memory()` off a pod.
+"""
+hostgib() = (g = tryparse(Float64, get(ENV, "POD_MEM_GB", "")); 
+             isnothing(g) || g <= 0 ? Sys.total_memory()/2^30 : g)
 gib(x) = round(x; digits=2)
 
 # The budget model lives in the package (`TS.memory_budget`), so the driver script, this
@@ -227,23 +241,44 @@ function run_accuracy()
     sa = setup_args_for(gap_mm=c.gap_mm, N=c.N, trange=c.trange, thickness=c.thickness)
     bu, fits = report_budget(opt("case", "dd05"), c)
     fits || return false
-    @printf("    %d z-slices\n", length(c.zsave))
+    # `extract_on_save=false` is the reference route for check 1, and with no `filename`
+    # it holds the WHOLE (Nω, Nky, Nkx, nz) stack in HOST memory — 16 z-slices at the 04
+    # field shape is 72 GiB of RAM, which no pod has. (`run_scan` never hits this: it
+    # streams to a temp file. Only this comparison materialises the stack.) The check
+    # does not need the full ladder — it is comparing two reductions of the same slices,
+    # so any nz ≥ 2 exercises it. Refuse rather than invoke the OOM killer, and say what
+    # to pass.
+    zsave = ACCZ > 0 ? c.zsave[round.(Int, range(1, length(c.zsave), ACCZ))] : c.zsave
+    stack = length(zsave) * bu.field
+    hg = hostgib()
+    @printf("    %d z-slices; the save-the-stack reference holds %.1f GiB in HOST RAM",
+            length(zsave), stack)
+    @printf(" (of %.0f GiB)\n", hg)
+    if stack > 0.6*hg
+        @printf("    REFUSING: %.1f GiB of host stack against %.0f GiB of RAM.\n", stack, hg)
+        nfit = max(2, floor(Int, 0.6*hg / bu.field))
+        @printf("      pass --accz=%d (or fewer) to run this check on a shorter ladder;\n", nfit)
+        println("      it compares two reductions of the same slices, so a short ladder")
+        println("      tests exactly the same thing. --mode=bench is unaffected: it uses")
+        println("      save-time extraction and never materialises the stack.")
+        return false
+    end
     setup = TS.build_setup(; sa..., arraytype=CUDA.CuArray)
     Nω = length(setup.grid.ω)
     τ = -8e-15   # off centre: a wing point exercises the weak-signal regime
 
     ok = true
     println("\n1. save-time extraction vs saving the stack (same GPU, same grid)")
-    t1 = @elapsed o1 = TS.simulate_delay_point(setup, τ; zsave=c.zsave, SOLVER...,
+    t1 = @elapsed o1 = TS.simulate_delay_point(setup, τ; zsave=zsave, SOLVER...,
                                                extract_on_save=true)
-    t2 = @elapsed o2 = TS.simulate_delay_point(setup, τ; zsave=c.zsave, SOLVER...,
+    t2 = @elapsed o2 = TS.simulate_delay_point(setup, τ; zsave=zsave, SOLVER...,
                                                extract_on_save=false)
     # NB `@printf` reads its format at MACRO-EXPANSION time, so it must be a single
     # string literal — a `"a" * "b"` concatenation is an expression and fails at include
     # time, taking the whole script with it. Split long messages into separate calls.
     @printf("   on-save %.1f s   save-the-stack %.1f s\n", t1, t2)
-    @printf("   (the difference is the %d × %.2f GiB of temp-file traffic the on-save\n",
-            length(c.zsave), field_gib(Nω, c.N))
+    @printf("   (the difference is the %d × %.2f GiB of stack the on-save route\n",
+            length(zsave), field_gib(Nω, c.N))
     println("    route does not do)")
     for k in keys(o1)
         k === :zsave && continue
@@ -253,7 +288,7 @@ function run_accuracy()
     end
 
     println("\n2. solver convergence at this shape: rtol $(SOLVER.rtol) vs 1e-8")
-    t3 = @elapsed o3 = TS.simulate_delay_point(setup, τ; zsave=c.zsave,
+    t3 = @elapsed o3 = TS.simulate_delay_point(setup, τ; zsave=zsave,
                                                init_dz=SOLVER.init_dz, rtol=1e-8,
                                                max_dz=SOLVER.max_dz,
                                                twin_period=SOLVER.twin_period)
@@ -272,7 +307,7 @@ function run_accuracy()
     if opt("cpu", "0") == "1"
         println("\n3. host reference (requested with --cpu=1; slow)")
         sh = TS.build_setup(; sa...)
-        th = @elapsed oh = TS.simulate_delay_point(sh, τ; zsave=c.zsave, SOLVER...)
+        th = @elapsed oh = TS.simulate_delay_point(sh, τ; zsave=zsave, SOLVER...)
         @printf("   cpu %.1f s on %d threads (%.1f× the GPU)\n", th, Threads.nthreads(), th/t1)
         for k in keys(oh)
             k === :zsave && continue
