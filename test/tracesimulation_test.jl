@@ -1033,4 +1033,82 @@ end
     rm(fn)
 end
 
+# -----------------------------------------------------------------------------
+# Regression: the input chirp must reach the GAUSSIAN beamlets themselves.
+#
+# `build_beamlets(::GaussianBeam, ...)` does not use the 1-D reference `Eω` that
+# `build_setup` applies the Taylor phase to — it builds its own field via
+# `Fields.GaussGaussField`, whose `ϕ` is a SCALAR carrier-envelope phase and so
+# cannot express GDD. Before the fix, `GDD=` was silently dropped for this beam
+# type: the *simulation* ran transform-limited.
+#
+# This is invisible in the obvious place. The `It_beamlet`/`Ito_beamlet` truth
+# diagnostics are reconstructed as sqrt(Iω_beamlet) x (phase of the 1-D `Eω`),
+# so they carried the chirp all along — a beamlet-FWHM test passes with or
+# without the fix, and pre-fix the recorded truth was chirped while the
+# simulated field was not. The assertion therefore has to look at the beamlet
+# FIELD, and it checks the applied spectral phase directly, which is exact and
+# grid-independent (an FWHM check is at the mercy of the test grid's coarse
+# time sampling).
+# -----------------------------------------------------------------------------
+@testset "GaussianBeam carries the input GDD" begin
+    λ0, τfwhm, energy = 260e-9, 2e-15, 0.2e-6
+    GDD = 2e-30
+    grid   = Grid.EnvGrid(10e-6, λ0, (200e-9, 400e-9), 40e-15)
+    xygrid = Grid.FreeGrid(40e-6, 32)
+    _, energyfun_ω = Luna.Fields.energyfuncs(grid, xygrid)
+    beam = TS.GaussianBeam(8.3e-6, 0.1)
+    geom = (; mask_diam=1.0e-3, mask_spacing=0.5e-3, f_foc=0.1, λ0, τfwhm)
+    FT1d = FFTW.plan_fft(copy(grid.t))
+
+    function gate1(ϕ)
+        Eω = Luna.Fields.GaussField(; λ0, τfwhm, energy, ϕ=ϕ)(grid, FT1d)
+        first(TS.build_beamlets(beam, grid, xygrid, geom, Eω, energy,
+                                energyfun_ω; ϕ=ϕ))
+    end
+    g0 = gate1([0.0, 0.0, 0.0, 0.0])
+    g2 = gate1([0.0, 0.0, GDD, 0.0])
+
+    # The transverse profile is omega-independent and the tilt is fixed, so one
+    # fixed k-space sample tracks the beamlet at every frequency. Pick the
+    # brightest.
+    iω = argmax(dropdims(sum(abs2, g0; dims=(2, 3)); dims=(2, 3)))
+    pk = argmax(abs2.(g0[iω, :, :]))
+    iy, ix = pk[1], pk[2]
+    E0 = g0[:, iy, ix]
+    E2 = g2[:, iy, ix]
+
+    # The chirp must actually reach the field.
+    @test !isapprox(abs.(angle.(E2)), abs.(angle.(E0)); rtol=1e-6)
+
+    # `prop_taylor!` applies exp(-i phi) with phi = sum Δω^(n-1)/(n-1)! phi_n,
+    # so the n=3 term contributes exp(-i GDD Δω^2 / 2): the phase difference is
+    # a pure quadratic with coefficient -GDD/2. Restrict to samples that carry
+    # signal and whose quadratic phase has not wrapped.
+    Δω = grid.ω .- PhysData.wlfreq(λ0)
+    ok = (abs2.(E0) .> 1e-6 * maximum(abs2, E0)) .& (abs.(0.5 * GDD .* Δω.^2) .< 2.5)
+    @test count(ok) > 20
+    dφ = angle.(E2[ok] ./ E0[ok])
+    c = sum(dφ .* Δω[ok].^2) / sum(Δω[ok].^4)   # LSQ quadratic through the origin
+    @test isapprox(c, -GDD / 2; rtol=1e-3)
+    # ...and the residual really is quadratic, not merely quadratic-ish.
+    @test maximum(abs.(dφ .- c .* Δω[ok].^2)) < 1e-6
+
+    # Sign is carried through.
+    gm = gate1([0.0, 0.0, -GDD, 0.0])
+    Em = gm[:, iy, ix]
+    dφm = angle.(Em[ok] ./ E0[ok])
+    @test isapprox(sum(dφm .* Δω[ok].^2) / sum(Δω[ok].^4), +GDD / 2; rtol=1e-3)
+
+    # The HE11 builder inherits the chirp through `Eω` and must NOT double it:
+    # passing phi as well changes nothing there.
+    beamh = TS.HE11Beam(125e-6, 5.0, 0.1)
+    Eωc = Luna.Fields.GaussField(; λ0, τfwhm, energy, ϕ=[0.0, 0.0, GDD, 0.0])(grid, FT1d)
+    h_noϕ = first(TS.build_beamlets(beamh, grid, xygrid, geom, Eωc, energy,
+                                    energyfun_ω))
+    h_ϕ = first(TS.build_beamlets(beamh, grid, xygrid, geom, Eωc, energy,
+                                   energyfun_ω; ϕ=[0.0, 0.0, GDD, 0.0]))
+    @test h_noϕ ≈ h_ϕ
+end
+
 end # @testset "Trace simulation"

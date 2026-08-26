@@ -153,8 +153,20 @@ information is printed via `@info`.
   quantisation).
 """
 function optimal_spatial_grid(f, mask_diam, mask_spacing, λmin, λmax;
-                              n_airy=5, pts_per_lobe=10, safety=1.5, margin=1.1)
-    x_max = mask_spacing/2 + mask_diam     # outermost mask edge from optical axis
+                              n_airy=5, pts_per_lobe=10, safety=1.5, margin=1.1,
+                              geometry::Symbol=:tg)
+    # Outermost extent of the nonlinear k-content, measured in the mask plane.
+    #
+    # :tg  four-hole boxcar. Holes at (+-d, +-d) with d = spacing/2 + diam/2, so
+    #      the outermost edge is spacing/2 + diam, and chi(3) combinations reach
+    #      three times the hole offset (the 3x below).
+    # :sd  two holes on ONE axis at +-s/2, s = spacing + diam. Self-diffraction
+    #      puts the signal at 2k_1 - k_2, i.e. at 3s/2 from the axis — one
+    #      further slot out than the beams themselves — and that, plus a beam
+    #      radius, is the true bound. It is quoted directly rather than as 3x
+    #      an inner radius, so no extra factor of three is applied.
+    x_max = geometry === :sd ? 1.5 * (mask_spacing + mask_diam) + mask_diam/2 :
+                               mask_spacing/2 + mask_diam
     r_airy_max = 1.22 * λmax * f / mask_diam
     r_airy_min = 1.22 * λmin * f / mask_diam
 
@@ -168,7 +180,7 @@ function optimal_spatial_grid(f, mask_diam, mask_spacing, λmin, λmax;
 
     # k-space containment: kmax must exceed the largest FWM nonlinear k-vector
     # (≈ 3 × outermost-hole k, with a safety factor).
-    k_NL_max = safety * 3 * 2π * x_max / (λmin * f)
+    k_NL_max = safety * (geometry === :sd ? 1 : 3) * 2π * x_max / (λmin * f)
     N_from_kspace = 2 * R_min * k_NL_max / π
     @info "N from k-space containment" N_from_kspace
 
@@ -655,10 +667,52 @@ the beam type.
 function build_beamlets(beam::HE11Beam, grid::Grid.EnvGrid,
                          xygrid::Grid.FreeGrid, geom, Eω::AbstractVector,
                          energy::Real, energyfun_ω;
-                         apod::Symbol=:supergauss, apod_param=nothing)
+                         apod::Symbol=:supergauss, apod_param=nothing,
+                         ϕ=nothing)
+    # `ϕ` is accepted for a uniform interface and deliberately IGNORED: this
+    # builder derives its beamlets from the 1-D reference `Eω`, which already
+    # carries the Taylor spectral phase applied in `build_setup`. Applying ϕ
+    # again here would double the chirp.
     # Full beam (no mask) in k-space, rescaled to the requested energy.
     Eωk0 = build_he11_kspace(grid, xygrid, beam, Eω)
     Eωk0 .*= sqrt(energy) / sqrt(energyfun_ω(Eωk0))
+
+    # --- Self-diffraction: TWO collinear beams --------------------------
+    #
+    # SD is the same propagation and the same chi(3) response; only the input
+    # differs. The signal is 2k_E - k_G, so with the probe E and gate G on one
+    # axis at -+s/2 (s = spacing + diam, centre to centre) the signal appears at
+    # -3s/2 — one further slot out, on the probe's side.
+    #
+    # The layout is SYMMETRIC about the axis (E at -s/2, G at +s/2) rather than
+    # putting E on axis and centring the signal. The centred variant needs a
+    # 27% narrower grid, but cuts the two beams from very different parts of the
+    # HE11 profile, giving them unequal energy; SD's signal is E^2 G*, so that
+    # asymmetry does not cancel.
+    #
+    # Which beam is delayed follows croak's SD kernel E^2 G*: the GATE appears
+    # once, carries the conjugation, and takes the delay — the same convention
+    # as TG, where the delay rides the singly-appearing conjugated arm.
+    if get(geom, :geometry, :tg) === :sd
+        s_cc = geom.mask_spacing + geom.mask_diam
+        Eωk_E = Eωk0 .* makemask(-s_cc/2, 0.0, geom.mask_diam, grid, xygrid;
+                                 zmask=beam.f_foc, apod=apod, apod_param=apod_param,
+                                 λ0_for_default=geom.λ0)
+        Eωk_G = Eωk0 .* makemask( s_cc/2, 0.0, geom.mask_diam, grid, xygrid;
+                                 zmask=beam.f_foc, apod=apod, apod_param=apod_param,
+                                 λ0_for_default=geom.λ0)
+        NyNx_sd = length(xygrid.y) * length(xygrid.x)
+        Iω_bl = dropdims(sum(abs2, Eωk_E; dims=(2, 3)); dims=(2, 3)) ./ NyNx_sd
+        meta_sd = Dict{String,Any}("Iω_beamlet" => Iω_bl, "a" => beam.a,
+                                   "geometry" => "sd",
+                                   "sd_separation_cc" => s_cc,
+                                   "sd_signal_x" => -1.5 * s_cc)
+        # E is the undelayed pair-slot (it appears squared); G takes the delay.
+        # `nothing` for the second gate rather than a zero array: at SD grid
+        # size that array is ~0.5 GB of pure waste, and this campaign has been
+        # OOM-killed by exactly this class of transient before.
+        return Eωk_E, nothing, Eωk_G, Iω_bl, meta_sd
+    end
 
     # Hole centres at (±d, ±d), where d = mask_spacing/2 + mask_diam/2.
     d = geom.mask_spacing/2 + geom.mask_diam/2
@@ -701,11 +755,28 @@ end
 function build_beamlets(beam::GaussianBeam, grid::Grid.EnvGrid,
                          xygrid::Grid.FreeGrid, geom, Eω::AbstractVector,
                          energy::Real, energyfun_ω;
-                         apod::Symbol=:supergauss, apod_param=nothing)
+                         apod::Symbol=:supergauss, apod_param=nothing,
+                         ϕ=nothing)
     # In the Gaussian model each beamlet carries an equal third of the energy.
     energy_per_beam = energy / 3
     Eωk_base = build_gaussian_kspace(grid, xygrid, beam,
                                      geom.λ0, geom.τfwhm, energy_per_beam)
+    # Apply the input spectral phase (GDD/TOD) HERE rather than inheriting it
+    # from the 1-D reference `Eω`, which this builder does not use.
+    # `Fields.GaussGaussField` takes a ϕ, but for a SpatioTemporalField that ϕ
+    # is a SCALAR carrier-envelope phase (`exp(i(ϕ + Δω t))`), not the Taylor
+    # coefficient VECTOR that the 1-D `GaussField` accepts — so it cannot carry
+    # GDD at all, and a chirp requested through `build_setup` would otherwise be
+    # silently dropped for this beam type.
+    #
+    # Applying it as a pure spectral phase is exact here: the Gaussian
+    # transverse profile is ω-independent by construction (that is the whole
+    # point of this beam), so the spectral phase commutes with the spatial
+    # structure. It would NOT be exact for a chromatic beam, which is why the
+    # HE11 builder instead inherits the already-chirped `Eω`.
+    if ϕ !== nothing && any(!iszero, ϕ)
+        Fields.prop_taylor!(Eωk_base, grid, ϕ, geom.λ0)
+    end
     Eωxy = ifft(Eωk_base, (2, 3))
 
     # Crossing geometry derived from the mask parameters.
@@ -894,6 +965,7 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
                        λlims  = (160e-9, 500e-9),
                        R = nothing, N = nothing,
                        apod::Symbol = :supergauss, apod_param = nothing,
+                       geometry::Symbol = :tg,
                        GDD = 0.0, TOD = 0.0,
                        raman::Bool = false, raman_fraction::Float64 = 0.18,
                        raman_impl::Symbol = :batched,
@@ -909,7 +981,8 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     if R === nothing || N === nothing
         f_foc = beam.f_foc
         R, N = optimal_spatial_grid(f_foc, mask_diam, mask_spacing,
-                                     λlims[1], λlims[2]; optimal_grid_kwargs...)
+                                     λlims[1], λlims[2];
+                                     geometry=geometry, optimal_grid_kwargs...)
     end
 
     # --- Build Luna grids --------------------------------------------------
@@ -977,10 +1050,10 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     Eω = Fields.GaussField(; λ0=λ0, τfwhm=τfwhm, energy=energy, ϕ=ϕ)(grid, FT1d)
 
     # --- Build three input beamlets ---------------------------------------
-    geom = (; mask_diam, mask_spacing, f_foc=beam.f_foc, λ0, τfwhm)
+    geom = (; mask_diam, mask_spacing, f_foc=beam.f_foc, λ0, τfwhm, geometry)
     Eωk_g1, Eωk_g2, Eωk_t_base, _Iω_beamlet, beam_meta =
         build_beamlets(beam, grid, xygrid, geom, Eω, energy, energyfun_ω;
-                       apod=apod, apod_param=apod_param)
+                       apod=apod, apod_param=apod_param, ϕ=ϕ)
 
     # --- Build signal window(s) -------------------------------------------
     window_array, window_suffix = _build_window_set(window, grid, xygrid; λ0=λ0)
@@ -990,7 +1063,25 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     # over these defaults if the caller supplies their own).
     extra_grid_metadata = merge(Dict{String,Any}(
                                     "raman" => raman ? 1 : 0,
-                                    "raman_fraction" => raman_fraction),
+                                    "raman_fraction" => raman_fraction,
+                                    # The MASK GEOMETRY, recorded so the file is
+                                    # self-describing. Retrieval codes need d/D
+                                    # = (spacing + D)/2D to build the smearing
+                                    # kernel, and until now it was carried by
+                                    # hand from script to script: a sweep run
+                                    # against a gap-1000 trace while still
+                                    # holding the gap-500 default silently built
+                                    # a kernel 25% too narrow, worth ~2% of
+                                    # retrieved duration with NO signature in
+                                    # the trace error. It cannot be recovered
+                                    # reliably after the fact either — the
+                                    # signal-window fields only pin it for some
+                                    # geometries, and for SD the window sits at
+                                    # 1.5s rather than d.
+                                    "mask_diam" => mask_diam,
+                                    "mask_spacing" => mask_spacing,
+                                    "f_foc" => beam.f_foc,
+                                    "geometry" => string(geometry)),
                                 extra_grid_metadata)
     combined_grid = _combined_grid(grid, xygrid, beam_meta,
                                     window, window_array, window_suffix,
@@ -1001,7 +1092,9 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     # Move them to the propagation's array type unless asked to keep them here: at the
     # largest campaign shapes those two fields are the difference between fitting a card
     # and not, and the per-point upload that replaces them is a fraction of a second.
-    Eωk_g12 = Eωk_g1 .+ Eωk_g2
+    # `Eωk_g2 === nothing` is the self-diffraction geometry: two beams, not three, so
+    # the "gate pair" is the single gate beamlet (see the :sd branch of build_beamlets).
+    Eωk_g12 = isnothing(Eωk_g2) ? Eωk_g1 : Eωk_g1 .+ Eωk_g2
     if arraytype !== Array && !beamlets_on_host
         Eωk_g12 = Adapt.adapt(arraytype, Eωk_g12)
         Eωk_t_base = Adapt.adapt(arraytype, Eωk_t_base)
@@ -2112,16 +2205,27 @@ function run_scan(setup_fn::Function, τs::AbstractVector;
         # temp file rather than creating one that is written to zero times.
         onsave = something(extract_on_save, Luna.Utils.isdevice(setup.transform.Eto))
         fname = (stream && !onsave) ? tempname() * "_pnps.h5" : nothing
+        # try/finally, not a plain call followed by rm: if the point throws, the
+        # temp file is 36 GB of orphan at production size. run_scan CATCHES the
+        # error per point and moves to the next one, so without this a transient
+        # full disk becomes a permanent one -- each failing point leaks another
+        # file and none of them are ever cleaned. That is what turned an
+        # overflowing /tmp into three scans returning 2-24% of their delays on
+        # 2026-08-24, with every SLURM job still reporting COMPLETED 0:0.
+        #
         # invokelatest: with `arraytype=:cuda` the GPU package was loaded *inside* this
         # closure, so its methods are newer than the world this closure is running in
         # and would be invisible to every device kernel below. One dynamic dispatch per
         # delay point, against a propagation of minutes.
-        out = Base.invokelatest(simulate_delay_point, setup, τi;
-                                zsave=zvec, init_dz=init_dz,
-                                rtol=rtol, max_dz=max_dz, norm=normx,
-                                twin_period=twin_period, filename=fname,
-                                extract_on_save=onsave)
-        stream && !isnothing(fname) && rm(fname; force=true)
+        out = try
+            Base.invokelatest(simulate_delay_point, setup, τi;
+                              zsave=zvec, init_dz=init_dz,
+                              rtol=rtol, max_dz=max_dz, norm=normx,
+                              twin_period=twin_period, filename=fname,
+                              extract_on_save=onsave)
+        finally
+            stream && !isnothing(fname) && rm(fname; force=true)
+        end
         # Return freed field-sized garbage (the point's input array, extraction
         # temporaries) to the allocator before the next point starts — with
         # two workers sharing a tight cgroup, un-collected garbage from one
@@ -2242,13 +2346,18 @@ function verify_against_collected(setup_args::NamedTuple, collected::AbstractStr
             t0 = time()
             # invokelatest for the same reason as in `run_scan`: the GPU package may
             # have been loaded by `_build_setup_resolved` above, i.e. during this call.
-            out = Base.invokelatest(simulate_delay_point, setup, τi;
-                                    zsave=zvec, init_dz=init_dz,
-                                    rtol=rtol, max_dz=max_dz, norm=norm,
-                                    twin_period=twin_period, filename=fname,
-                                    extract_on_save=onsave)
+            out = try
+                Base.invokelatest(simulate_delay_point, setup, τi;
+                                  zsave=zvec, init_dz=init_dz,
+                                  rtol=rtol, max_dz=max_dz, norm=norm,
+                                  twin_period=twin_period, filename=fname,
+                                  extract_on_save=onsave)
+            finally
+                # See the note at the streaming call above: a throwing point
+                # must not leave its temp file behind.
+                stream && !isnothing(fname) && rm(fname; force=true)
+            end
             wall = time() - t0
-            stream && !isnothing(fname) && rm(fname; force=true)
             point = Dict{String,Any}("scanidx" => idx, "τ" => τi,
                                      "wall_s" => wall,
                                      "maxrss_GiB" => Sys.maxrss()/2^30)
