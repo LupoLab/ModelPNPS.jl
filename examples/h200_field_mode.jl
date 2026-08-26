@@ -77,7 +77,8 @@
 #
 # Re-running in the same directory resumes (`skip_existing=true`).
 #
-# Environment: PNPS_DRYRUN, FIELD_POINTS (default 11), FIELD_ARRAYTYPE (cuda|cpu),
+# Environment: PNPS_DRYRUN, FIELD_POINTS (default 11; 0 = the FULL reference axis —
+# 200 points for the 2 fs arm, 230 for the 1 fs arm), FIELD_ARRAYTYPE (cuda|cpu),
 # FIELD_NAME (scan name override).
 # =============================================================================
 
@@ -96,9 +97,21 @@ const CONFIG   = :port2fs      # :port2fs (the port check) | :expt1fs (the exper
 const RESPONSE = :nothg        # :nothg (envelope-matched physics) | :thg (E³)
 const FFAC     = 6             # see the header before changing
 
+# The DELAY AXIS of each arm is the one its delivered envelope reference actually uses,
+# checked against the files rather than assumed — a scan on a different axis needs
+# interpolation in τ to compare, which is exactly what this experiment must not introduce.
+#
+#   2 fs (tgfrog_rtol7_sw_gap1000um_2fs_40umUVFS_collected.h5): 200 points, ±25 fs,
+#        uniform — `range(-25e-15, 25e-15, 200)` reproduces it exactly.
+#   1 fs (tgfrog_kerr_..._1fs_40umUVFS_collected.h5): 230 points, ±40 fs — that same
+#        dense core PLUS integer-femtosecond wings from ±26 to ±40 fs. Reproduced
+#        exactly by core ∪ wings below. (The 1 fs file was extended into the wings after
+#        the 2 fs one; taking ±25 fs for both would silently drop 30 points.)
+const CORE  = collect(range(-25e-15, 25e-15, 200))
+const WINGS = vcat((-40:-26) .* 1e-15, (26:40) .* 1e-15)
 const ARMS = Dict(
-    :port2fs => (τfwhm = 2.0e-15, thickness = 40e-6, τmax = 25e-15, tag = "2fs"),
-    :expt1fs => (τfwhm = 1.0e-15, thickness = 40e-6, τmax = 25e-15, tag = "1fs"),
+    :port2fs => (τfwhm = 2.0e-15, thickness = 40e-6, tag = "2fs", wings = Float64[]),
+    :expt1fs => (τfwhm = 1.0e-15, thickness = 40e-6, tag = "1fs", wings = WINGS),
 )
 haskey(ARMS, CONFIG) || error("CONFIG must be one of $(keys(ARMS)); got $CONFIG")
 const ARM = ARMS[CONFIG]
@@ -154,11 +167,13 @@ setup_args = (; λ0, τfwhm, energy, thickness, material,
                 # sizes, because the field grid is what makes the card tight.
                 beamlets_on_host=true)
 
-# Delay subset taken ON the production grid points, so each one compares directly against
-# the delivered envelope file with no interpolation in τ. A full 200-point scan is ~40x
-# the envelope campaign's resource; the comparison does not need it.
-τ_prod = collect(range(-ARM.τmax, ARM.τmax, 200))
-τ = τ_prod[round.(Int, range(1, 200, NPTS))]
+# FIELD_POINTS = 0 (or anything ≥ the arm's length) runs the WHOLE reference axis — that
+# is the "full scan". Anything smaller takes an evenly spaced subset OF THE DENSE CORE,
+# because a spot comparison wants the delays where the signal is, not the wings. Either
+# way every delay is exactly a reference grid point, so it compares with no interpolation.
+τ_all = sort(vcat(CORE, ARM.wings))
+const FULLSCAN = NPTS <= 0 || NPTS >= length(τ_all)
+τ = FULLSCAN ? τ_all : CORE[round.(Int, range(1, length(CORE), NPTS))]
 
 # The same 16-slice ladder as 04/13, so every depth has an envelope counterpart. The
 # residual's DEPTH DEPENDENCE is the quantity of interest: the unexplained retrieval
@@ -185,8 +200,10 @@ bu = TS.memory_budget(setup_args)
         bu.Nω, bu.Nt, bu.Nto, bu.Nωo, bu.Nto == bu.Nt ? "none" : "$(bu.Nto ÷ bu.Nt)×",
         N_GRID, N_GRID, R_GRID*1e6)
 @printf("  (the envelope production grid for comparison is Nω = 256)\n")
-@printf("%d delay points on the production τ grid, %d z-slices, rtol 1e-7, max_dz 2 µm\n",
-        NPTS, length(zsave))
+@printf("%d delay points%s (the reference axis has %d, ±%.0f fs), %d z-slices\n",
+        length(τ), FULLSCAN ? " — FULL SCAN" : " from the dense core",
+        length(τ_all), maximum(τ_all)*1e15, length(zsave))
+@printf("rtol 1e-7, max_dz 2 µm, apodisation at the z-saves only\n")
 @printf("memory: state %.1f + Et_win %.1f + Eto %.1f + Eωo %.1f + Pto %.1f + analytic %.1f",
         bu.state, bu.et_win, bu.eto, bu.ewo, bu.pto, bu.analytic)
 @printf(" + window %.1f = %.1f GiB device\n", bu.window, bu.device)

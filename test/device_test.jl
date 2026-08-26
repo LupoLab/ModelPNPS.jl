@@ -429,6 +429,57 @@ if get(ENV, "LUNA_TEST_CUDA", "") == "1"
             ob = TS.simulate_delay_point(sb, 0.5e-15; nz=2, init_dz=5e-7, rtol=1e-8)
             oh0 = TS.simulate_delay_point(sh, 0.5e-15; nz=2, init_dz=5e-7, rtol=1e-8)
             @test isapprox(ob.Iω_win, oh0.Iω_win; rtol=1e-8)
+
+            # --- FIELD MODE on real hardware ---------------------------------------
+            # The JLArray tests above cover the LOGIC of this path, but JLArrays
+            # interprets kernels on the host: it cannot catch CUDA code generation, and
+            # its c2r shim transforms out of place, so it would tolerate an aliasing
+            # mistake cuFFT will not. A RealGrid run is exactly where that matters — it
+            # always takes TransFree's general path, whose inverse transform is c2r.
+            # Both responses, because they take different branches: :thg is pointwise
+            # (the polarisation overwrites the field buffer), :nothg is batched and
+            # carries a lazily-allocated analytic-signal buffer.
+            for response in (:nothg, :thg)
+                fkw = (; kw..., field_mode=true, response)
+                fh = TS.build_setup(; fkw...)
+                fd = TS.build_setup(; fkw..., arraytype=:cuda, beamlets_on_host=true)
+                @test fd.grid isa Grid.RealGrid
+                @test Utils.backend(fd.transform.Eto) isa Utils.DeviceBackend
+                @test eltype(fd.transform.Eto) === Float64   # real time-domain buffers
+                ofh = TS.simulate_delay_point(fh, 0.5e-15; nz=2, init_dz=5e-7, rtol=1e-8)
+                ofd = TS.simulate_delay_point(fd, 0.5e-15; nz=2, init_dz=5e-7, rtol=1e-8)
+                rel = maximum(abs.(ofd.Iω_win .- ofh.Iω_win)) / maximum(abs, ofh.Iω_win)
+                @info "ModelPNPS CUDA vs host (field mode)" response rel_Iω_win=rel
+                @test rel < 1e-8
+                @test ofd.Iω_win isa Array
+                # the state must survive its own RHS: a c2r inverse destroys its input,
+                # and getting this wrong would silently corrupt the propagation
+                @test all(isfinite, ofd.Iω_full)
+            end
+
+            # ffac = 4 removes the oversampling, which changes which buffers exist at
+            # all (no Et_win, and Eto doubles as the window scratch).
+            f4h = TS.build_setup(; kw..., field_mode=true, ffac=4)
+            f4d = TS.build_setup(; kw..., field_mode=true, ffac=4, arraytype=:cuda)
+            @test length(f4d.grid.to) == length(f4d.grid.t)
+            o4h = TS.simulate_delay_point(f4h, 0.0; nz=2, init_dz=5e-7, rtol=1e-8)
+            o4d = TS.simulate_delay_point(f4d, 0.0; nz=2, init_dz=5e-7, rtol=1e-8)
+            @test isapprox(o4d.Iω_win, o4h.Iω_win; rtol=1e-8)
+
+            # The budget the driver and benchmark scripts refuse a shape on must match
+            # what the card actually allocates — on the real allocator, not JLArrays'.
+            let b = TS.memory_budget((; kw..., field_mode=true))
+                Luna.device_reclaim()
+                free0 = Luna.device_memory_status()[1]
+                fs = TS.build_setup(; kw..., field_mode=true, arraytype=:cuda)
+                TS.simulate_delay_point(fs, 0.0; nz=2, init_dz=5e-7, rtol=1e-8)
+                used = (free0 - Luna.device_memory_status()[1]) / 2^30
+                @info "field-mode device memory" predicted_GiB=b.device measured_GiB=used
+                # Generous: at this toy size the cuFFT workspace and the allocator's
+                # pooling are a large fraction of a small number. The check that matters
+                # is that it is the same ORDER, i.e. no buffer is missing from the model.
+                @test used < 4 * b.device
+            end
         end
     end
 else
