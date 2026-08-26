@@ -173,34 +173,34 @@ NAME = get(ENV, "FIELD_NAME",
 
 # ------------------------------------------------------------------- report ---
 # Grid and memory budget, computed rather than quoted: at these sizes "it did not fit" is
-# an hour of queue time and a dead process, and the numbers are cheap to derive.
-grid = Luna.Grid.RealGrid(thickness, λ0, λlims, 110e-15; ffac=FFAC)
-Nω, Nt, Nto = length(grid.ω), length(grid.t), length(grid.to)
-Nωo = length(grid.ωo)
-fld(n, sz) = n * N_GRID^2 * sz / 2^30
-pointwise = RESPONSE === :thg      # E³ is pointwise; |E_a|²E is batched
-need = 9*fld(Nω, 16) +             # RK45 state registers
-       # Et_win, the window-application scratch — only when the grid is oversampled;
-       # otherwise Eto already has the coarse shape and doubles as it.
-       (Nto == Nt ? 0.0 : fld(Nt, 8)) +
-       fld(Nto, 8) +               # Eto
-       fld(Nωo, 16) +              # Eωo (Pωo aliases it)
-       (pointwise ? 0.0 : fld(Nto, 8)) +   # Pto (aliases Eto when all responses pointwise)
-       (pointwise ? 0.0 : fld(Nto, 16)) +  # analytic-signal buffer of the no-THG response
-       fld(Nω, 8)                  # the extraction window, on the device
+# an hour of queue time and a dead process. `TS.memory_budget` is the package's own model,
+# pinned against real allocations by the test suite, so this cannot drift from what the
+# propagation actually does.
+bu = TS.memory_budget(setup_args)
 
 @printf("field-mode TG-FROG — %s\n", NAME)
 @printf("arm %s: %.1f fs, %d µm, response :%s, ffac %d\n",
         CONFIG, τfwhm*1e15, round(Int, thickness*1e6), RESPONSE, FFAC)
 @printf("grid: Nω %d, Nt %d, Nto %d, Nωo %d, oversampling %s; transverse %d×%d, R %.0f µm\n",
-        Nω, Nt, Nto, Nωo, Nto == Nt ? "none" : "$(Nto ÷ Nt)×", N_GRID, N_GRID, R_GRID*1e6)
+        bu.Nω, bu.Nt, bu.Nto, bu.Nωo, bu.Nto == bu.Nt ? "none" : "$(bu.Nto ÷ bu.Nt)×",
+        N_GRID, N_GRID, R_GRID*1e6)
 @printf("  (the envelope production grid for comparison is Nω = 256)\n")
 @printf("%d delay points on the production τ grid, %d z-slices, rtol 1e-7, max_dz 2 µm\n",
         NPTS, length(zsave))
-@printf("estimated resident field memory: %.1f GiB\n", need)
+@printf("memory: state %.1f + Et_win %.1f + Eto %.1f + Eωo %.1f + Pto %.1f + analytic %.1f",
+        bu.state, bu.et_win, bu.eto, bu.ewo, bu.pto, bu.analytic)
+@printf(" + window %.1f = %.1f GiB device\n", bu.window, bu.device)
+@printf("        host peak in build_setup %.1f GiB\n", bu.host)
+if RESPONSE !== :thg
+    @printf("        (%.1f GiB of the device figure — the analytic signal — is allocated on\n",
+            bu.analytic)
+    println("         the FIRST RHS, not at setup, so a card with room after build_setup")
+    println("         can still die on the first step)")
+end
 @printf("arraytype %s   julia %s   threads %d\n", ATYPE, VERSION, Threads.nthreads())
 flush(stdout)
 
+need = bu.device
 if ATYPE == "cuda"
     # Resolve (and load) the GPU package the same way build_setup will, then ask it how
     # much room there actually is.

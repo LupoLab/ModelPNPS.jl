@@ -17,6 +17,10 @@
 #   accuracy  GPU-only: the two extraction routes against each other, and
 #             production rtol against a decade tighter                     ~3-8 min
 #   bench     GPU delay points at the production shapes                    ~5-20 min
+#   fieldbench  FIELD-RESOLVED delay points at the 1 fs production shape, with the
+#             envelope companion at the same shape for the ratio          ~10-40 min
+#             OPT-IN: not in the default steps, and H200-only at the default
+#             response — see below.
 #   scan      a real short delay scan through run_scan, one process        ~5-15 min
 #   share     OPT-IN saturation diagnostic: the same points split across processes
 #             sharing the card. NOT in the default steps — see below.       ~5-10 min
@@ -28,7 +32,40 @@
 #   NPROC=4 bash .../h200_modelpnps_suite.sh          # processes sharing the GPU
 # Variables: STEPS, CASES (default dd05,04,dd20,100um), POINTS (per case, default 1),
 # SCAN_CASE (default dd05), SCAN_POINTS (default 4), NPROC (default 3), ACC_CASE
-# (accuracy case, default dd05), LUNA_THREADS, RUNDIR.
+# (accuracy case, default dd05), LUNA_THREADS, RUNDIR,
+# FIELD_CASES (default 04), FIELD_RESPONSE (nothg|thg, default nothg), FIELD_FFAC (6|4).
+#
+# FIELD MODE — what `fieldbench` is for, and why it is opt-in
+#   The 1 fs traces retrieve with a ~5e-3 model error, ten times the 2 fs figure, and eight
+#   explanations have been eliminated. At 260 nm a 1 fs pulse is 1.15 optical cycles, so
+#   the envelope approximation itself is the remaining suspect. `field_mode=true` runs the
+#   same geometry on the real, carrier-resolved field; if the traces agree, the residual
+#   belongs to the retrieval code.
+#
+#   It is heavy, and not by a small factor. At the `04` production shape (N = 768, 40 µm,
+#   which IS the 1 fs configuration):
+#
+#       envelope                 Nω  256    ~24 GiB device,  ~12 GiB host peak
+#       field :nothg  ffac 6     Nω  513    ~92 GiB device,  ~25 GiB host peak
+#       field :thg    ffac 6     Nω  513    ~65 GiB device
+#       field :nothg  ffac 4     Nω  513    ~65 GiB device
+#
+#   So the default arm is H200-only; :thg and :nothg-at-ffac-4 fit an 80 GB H100; an A40
+#   fits none. `dd20` (N = 1024) needs 164 GiB in :nothg and fits nothing. The script
+#   computes the budget per case from the package's own model and SKIPS a case that will
+#   not fit, so it is safe to point at a list — but check the host RAM too: 25 GiB of it
+#   during `build_setup` is more than some pods have.
+#
+#   :nothg is the arm the campaign wants — (3/4)ε₀χ³|E_a|²E carries the same physics
+#   content as the envelope's Kerr_env, so the comparison isolates representation error
+#   with nothing else changed. It is also the expensive one. FIELD_FFAC=4 halves the
+#   nonlinear grid and is validated for :nothg, but it changes δω and the realised time
+#   window, so a ffac-4 trace is not directly comparable with the delivered envelope files
+#   — use it for a self-contained scan, not for the comparison.
+#
+#   For a field-mode ACCURACY run (extraction routes + rtol convergence), invoke the
+#   benchmark directly rather than through a step:
+#     julia --project=$DEV .../h200_bench.jl --mode=accuracy --field=on --case=04
 #
 # NO CPU BENCHMARKS RUN HERE. This is rented GPU time; CPU numbers come from the HPC.
 # For a full-accuracy A/B, take the `scan` step's collected HDF5 back to the HPC and
@@ -72,7 +109,12 @@
 #     rtol comparison is a PHYSICS result, not a pass/fail: the campaign criterion is
 #     every z-slice of Iω_win within 1e-3 of an rtol=1e-8 run, and it has not been
 #     measured at the dd05/dd20/100um shapes.
-#   * bench: wall per point, and "device GiB" ≈ 10 × the field size. More than that
+#   * fieldbench: the FIELD/ENVELOPE time ratio at the same shape, and that the measured
+#     device memory matches the predicted budget (the script says so explicitly). A large
+#     mismatch means the cuFFT workspace is not negligible at that shape, which changes
+#     what fits.
+#   * bench: wall per point, and "device GiB" ≈ 10 × the field size (envelope only — the
+#     field path does not obey that rule; see FIELD MODE above). More than that
 #     means the cuFFT workspace is NOT negligible at that shape, which changes how
 #     many points fit on the card at once. Compare against the A40 reference:
 #     the `04` shape measured 4.6 min/point and exactly 22.5 GiB there.
@@ -89,7 +131,10 @@ LUNA="${LUNA:-/workspace/code/Luna.jl}"
 DEV="${DEV:-/workspace/code/dev}"
 STAMP=$(date +%Y%m%d-%H%M%S)
 RUNDIR="${RUNDIR:-/workspace/runs/h200-pnps-$STAMP}"
-STEPS="${STEPS:-pkgs,tests,accuracy,bench,scan}"   # `share` is opt-in, see header
+STEPS="${STEPS:-pkgs,tests,accuracy,bench,scan}"   # `share`, `fieldbench` opt-in — see header
+FIELD_CASES="${FIELD_CASES:-04}"                  # 04 IS the 1 fs production shape
+FIELD_RESPONSE="${FIELD_RESPONSE:-nothg}"
+FIELD_FFAC="${FIELD_FFAC:-6}"
 CASES="${CASES:-dd05,04,dd20,100um}"
 POINTS="${POINTS:-1}"
 SCAN_CASE="${SCAN_CASE:-dd05}"
@@ -145,6 +190,18 @@ if has bench; then
     time julia --project="$DEV" "$PNPS/examples/h200_bench.jl" \
         --mode=bench --cases="$CASES" --points="$POINTS" --out="$RUNDIR/bench.csv"
     echo; echo "bench.csv:"; cat "$RUNDIR/bench.csv" 2>/dev/null || true
+fi
+
+if has fieldbench; then
+    step "field bench: RealGrid delay points at $FIELD_CASES (:$FIELD_RESPONSE, ffac $FIELD_FFAC)"
+    # --ratio=on (the default with --field=on) also times the ENVELOPE point at the same
+    # shape, because the ratio is the number the campaign is sized on and it has to be
+    # measured on this card: the work is bandwidth-bound and the two paths move different
+    # amounts through different buffers. A laptop gives 3.0-3.3x at matched step counts.
+    time julia --project="$DEV" "$PNPS/examples/h200_bench.jl" \
+        --mode=bench --field=on --response="$FIELD_RESPONSE" --ffac="$FIELD_FFAC" \
+        --cases="$FIELD_CASES" --points="$POINTS" --out="$RUNDIR/fieldbench.csv"
+    echo; echo "fieldbench.csv:"; cat "$RUNDIR/fieldbench.csv" 2>/dev/null || true
 fi
 
 if has scan; then

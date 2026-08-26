@@ -1256,6 +1256,57 @@ end
     @test last(rs) < 2*first(rs)
 end
 
+@testset "memory_budget matches what is actually allocated" begin
+    # `memory_budget` is what the GPU driver and benchmark scripts use to decide whether a
+    # shape fits the card, and being wrong there costs an hour of rented GPU and a dead
+    # process. So check the arithmetic against the buffers a real setup holds, in every
+    # combination whose buffer SET differs: the envelope fast path, and the field general
+    # path with a pointwise response, a batched one, and no oversampling.
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.5e-3, zmask=0.1, apod=:tanh)
+    N = 24
+    base = (; λ0=260e-9, τfwhm=1e-15, energy=0.1e-6, thickness=4e-6, material=:SiO2,
+              mask_diam=1.0e-3, mask_spacing=1.0e-3, beam, window,
+              apod=:supergauss, apod_param=16, trange=110e-15,
+              λlims=(143e-9, 600e-9), R=366e-6, N=N, store_window=false)
+    nbytes(x) = isnothing(x) ? 0 : length(x)*sizeof(eltype(x))
+    for kw in ((;),
+               (; field_mode=true, response=:nothg),
+               (; field_mode=true, response=:thg),
+               (; field_mode=true, response=:nothg, ffac=4))
+        args = (; base..., kw...)
+        b = TS.memory_budget(args)
+        s = TS.build_setup(; args...)
+        # The no-THG response allocates its analytic-signal buffer on its FIRST CALL, not
+        # at setup — a card can look fine after build_setup and still die on the first
+        # step. Propagate once so the count includes it; that is what the budget claims.
+        TS.simulate_delay_point(s, 0.0; zsave=2, init_dz=2e-6, rtol=1e-4)
+        t = s.transform
+        resp_buf = [r isa Luna.Nonlinear.KerrFieldNoTHG ? r.C : nothing for r in t.resp]
+        seen = IdDict()
+        actual = 0
+        for buf in (t.Pto, t.Eto, t.Eωo, t.Pωo, t.Et_win, resp_buf...)
+            isnothing(buf) && continue
+            get!(seen, buf, false) && continue      # count an alias once
+            seen[buf] = true
+            actual += nbytes(buf)
+        end
+        Nω = length(s.grid.ω)
+        actual += 9*Nω*N*N*16          # the RK45 registers
+        actual += Nω*N*N*8             # the device-resident extraction window
+        @test b.Nω == Nω
+        @test b.device * 2^30 ≈ actual
+        # ...and the structural facts the arithmetic rests on. The two paths encode "the
+        # polarisation needs no buffer of its own" differently — the fast path leaves it
+        # `nothing`, the general path aliases it to the field — so ask the question, not
+        # one of its two spellings.
+        @test (isnothing(t.Pωo) ? isnothing(t.Eωo) : t.Pωo === t.Eωo)
+        @test (isnothing(t.Pto) || t.Pto === t.Eto) == (b.pto == 0)
+        @test isnothing(t.Et_win) == (length(s.grid.to) == length(s.grid.t))
+    end
+end
+
 @testset "field mode: run_scan / load_simulated_scan round trip" begin
     # The whole file contract end to end. A field-mode file's /grid/ω is a monotonic rfft
     # half-spectrum with no ω0 field on the grid struct, so this is where a metadata slip
