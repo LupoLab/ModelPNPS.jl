@@ -93,7 +93,7 @@ import Luna: Capillary, Fields, Grid, LinearOps, Maths, Nonlinear, NonlinearRHS,
              Output, PhysData, Raman, Scans
 import Luna.Capillary: besselj
 import FFTW
-import FFTW: fft, ifft, plan_fft
+import FFTW: fft, ifft, irfft, plan_fft, plan_rfft
 import HDF5
 import LinearAlgebra: mul!
 import Adapt
@@ -391,7 +391,7 @@ or [`run_scan`](@ref) to use it.
 The struct is a passive bundle; fields are not part of the public API and
 may evolve. Use the constructors and methods provided.
 """
-struct TGFROGSetup{LO,TR,FTT,WIN,WA,BT,PT}
+struct TGFROGSetup{GT,LO,TR,FTT,WIN,WA,BT,PT}
     # Physical / numerical parameters echoed for output metadata
     λ0::Float64
     τfwhm::Float64
@@ -401,8 +401,10 @@ struct TGFROGSetup{LO,TR,FTT,WIN,WA,BT,PT}
     mask_diam::Float64
     mask_spacing::Float64
 
-    # Luna grids
-    grid::Grid.EnvGrid
+    # Luna grids. `grid` is an `EnvGrid` in the default (envelope) mode and a `RealGrid`
+    # in field mode — see `build_setup`'s `field_mode`. It is a type parameter rather than
+    # an abstractly-typed field so that every method reading `setup.grid` stays inferrable.
+    grid::GT
     xygrid::Grid.FreeGrid
 
     # Pre-built propagation pieces
@@ -454,7 +456,7 @@ The closed-form Hankel transform of the J₀ mode profile is used; the
 reasonable grid sizes (the singular ring is at radius `u₁₁/a`, well outside
 typical Nyquist limits at the focal-plane scale).
 """
-function build_he11_kspace(grid::Grid.EnvGrid, xygrid::Grid.FreeGrid,
+function build_he11_kspace(grid::Grid.TimeGrid, xygrid::Grid.FreeGrid,
                             beam::HE11Beam, Eω::AbstractVector)
     a_s = a_scaled(beam)
 
@@ -492,7 +494,7 @@ grid, with total spectral energy normalised to `energy`. Internally uses
 `Luna.Fields.GaussGaussField` and `Luna.setup` (with no nonlinearity) to
 construct the field, then discards the throw-away transform/FT.
 """
-function build_gaussian_kspace(grid::Grid.EnvGrid, xygrid::Grid.FreeGrid,
+function build_gaussian_kspace(grid::Grid.TimeGrid, xygrid::Grid.FreeGrid,
                                 beam::GaussianBeam, λ0, τfwhm, energy)
     inputs = Fields.GaussGaussField(; λ0=λ0, τfwhm=τfwhm, energy=energy, w0=beam.w0)
     # Use a no-op nonlinearity setup just to get a populated Eωk array. We must
@@ -501,7 +503,10 @@ function build_gaussian_kspace(grid::Grid.EnvGrid, xygrid::Grid.FreeGrid,
     densityfun = z -> 1
     nfun_unit = (λ) -> 1.0
     normfun = NonlinearRHS.const_norm_free(grid, xygrid, nfun_unit)
-    responses = (Nonlinear.Kerr_env(0.0),)   # χ3=0 — never evaluated
+    # χ3 = 0, so never evaluated — but it must MATCH the grid's field type, because
+    # `Luna.setup` builds the transform's buffers from it.
+    responses = (_is_field_mode(grid) ? Nonlinear.Kerr_field(0.0) :
+                                        Nonlinear.Kerr_env(0.0),)
     Eωk, _, _ = Luna.setup(grid, xygrid, densityfun, normfun, responses, inputs)
     Eωk
 end
@@ -527,7 +532,7 @@ Apply a time delay `τ` (seconds) to a frequency-domain field by multiplying
 each spectral component by `exp(-i ω τ)`. `τ = 0` returns a copy equal to
 the input.
 """
-function apply_delay(Eωk::AbstractArray{<:Complex,3}, grid::Grid.EnvGrid, τ::Real)
+function apply_delay(Eωk::AbstractArray{<:Complex,3}, grid::Grid.TimeGrid, τ::Real)
     return Eωk .* reshape(exp.(-1im .* grid.ω .* τ), (length(grid.ω), 1, 1))
 end
 
@@ -550,7 +555,7 @@ in which case the smoothing width is set to `3·Δx_mask` evaluated at the
 carrier wavelength.
 """
 function makemask(holex::Real, holey::Real, holediam::Real,
-                  grid::Grid.EnvGrid, xygrid::Grid.FreeGrid;
+                  grid::Grid.TimeGrid, xygrid::Grid.FreeGrid;
                   zmask::Real,
                   apod::Symbol=:supergauss,
                   apod_param=nothing,
@@ -603,14 +608,14 @@ Materialise the precomputed signal-extraction window. Returns a
 [`PlanckOmegaWindow`](@ref). `λ0` is forwarded to [`makemask`](@ref) for
 default `:tanh` apodisation widths only.
 """
-function build_window(w::PhysicalMaskWindow, grid::Grid.EnvGrid,
+function build_window(w::PhysicalMaskWindow, grid::Grid.TimeGrid,
                        xygrid::Grid.FreeGrid; λ0=nothing)
     return makemask(w.holex, w.holey, w.holediam, grid, xygrid;
                     zmask=w.zmask, apod=w.apod, apod_param=w.apod_param,
                     λ0_for_default=λ0)
 end
 
-function build_window(w::PlanckWindow, grid::Grid.EnvGrid,
+function build_window(w::PlanckWindow, grid::Grid.TimeGrid,
                        xygrid::Grid.FreeGrid; λ0=nothing)
     # Radial distance from window centre.
     κ = @. sqrt((xygrid.ky - w.kyc)^2 + (xygrid.kx' - w.kxc)^2)
@@ -618,7 +623,7 @@ function build_window(w::PlanckWindow, grid::Grid.EnvGrid,
     return Maths.planck_taper.(κ, -w.kwidth, -w.kwidth, w.kwidth, w.pad * w.kwidth)
 end
 
-function build_window(w::PlanckOmegaWindow, grid::Grid.EnvGrid,
+function build_window(w::PlanckOmegaWindow, grid::Grid.TimeGrid,
                        xygrid::Grid.FreeGrid; λ0=nothing)
     win = zeros(Float64, length(grid.ω), length(xygrid.ky), length(xygrid.kx))
     @inbounds for (iω, ω) in enumerate(grid.ω)
@@ -664,7 +669,7 @@ just the (unvignetted) input spectrum scaled to `energy/3`; it is returned
 for uniformity with the HE₁₁ model so downstream code never special-cases
 the beam type.
 """
-function build_beamlets(beam::HE11Beam, grid::Grid.EnvGrid,
+function build_beamlets(beam::HE11Beam, grid::Grid.TimeGrid,
                          xygrid::Grid.FreeGrid, geom, Eω::AbstractVector,
                          energy::Real, energyfun_ω;
                          apod::Symbol=:supergauss, apod_param=nothing,
@@ -752,7 +757,7 @@ function build_beamlets(beam::HE11Beam, grid::Grid.EnvGrid,
     return Eωk_g1, Eωk_g2, Eωk_t_base, Iω_beamlet, beam_meta
 end
 
-function build_beamlets(beam::GaussianBeam, grid::Grid.EnvGrid,
+function build_beamlets(beam::GaussianBeam, grid::Grid.TimeGrid,
                          xygrid::Grid.FreeGrid, geom, Eω::AbstractVector,
                          energy::Real, energyfun_ω;
                          apod::Symbol=:supergauss, apod_param=nothing,
@@ -871,6 +876,56 @@ function (F::FrozenRamanPolarEnv)(out, Et, ρ)
 end
 
 # ============================================================================
+# Grid-representation helpers
+# ============================================================================
+#
+# The two grid types differ in exactly three places downstream of `build_setup`: how a
+# spectrum is transformed back to time, what "intensity" means once it is there, and what
+# the frequency axis looks like to a reader. Everything else — the masks, the windows, the
+# delay ramp, the k-space builders, the whole extraction path — is written in terms of the
+# ABSOLUTE frequency axis `grid.ω`, which both grid types carry, and needs no branching.
+
+"""
+    _to_time(grid, Eω)
+
+The 1-D time-domain field for a spectrum on `grid`'s own frequency axis: an inverse FFT for
+an `EnvGrid` (whose spectrum is FFT-ordered about the carrier) and an inverse *real* FFT for
+a `RealGrid` (whose spectrum is the monotonic `rfft` half-spectrum of a real field).
+"""
+_to_time(grid::Grid.EnvGrid, Eω::AbstractVector) = ifft(Eω)
+_to_time(grid::Grid.RealGrid, Eω::AbstractVector) = irfft(Eω, length(grid.t))
+
+"""
+    _envelope_intensity(grid, Et)
+
+`|A(t)|²` — the ENVELOPE intensity — from whatever time-domain field `grid` produces. On an
+`EnvGrid` that is `Et` itself; on a `RealGrid` the field is carrier-resolved and the
+envelope is recovered through its analytic signal.
+
+Both conventions coincide numerically: Luna builds a real-grid pulse as `√I·cos(ω₀t)` and an
+envelope-grid pulse as `√I·exp(iΔωt)`, so `|A|² = I` either way. Keeping the *envelope*
+intensity in the output metadata means a consumer of a field-mode file sees the same
+physical quantity in `It`/`Ito` as in every envelope file, rather than a carrier-modulated
+one it would have to demodulate.
+"""
+_envelope_intensity(::Grid.EnvGrid, Et) = abs2.(Et)
+_envelope_intensity(::Grid.RealGrid, Et) = abs2.(Maths.hilbert(Et))
+
+"""
+    _plan_1d(grid)
+
+Forward transform plan for the 1-D reference pulse: complex for an `EnvGrid`, real-to-complex
+for a `RealGrid`. `Fields.GaussField` dispatches its time-domain shape on the grid type but
+takes the plan from the caller, so the two have to be chosen together.
+"""
+_plan_1d(grid::Grid.EnvGrid) = plan_fft(copy(grid.t))
+_plan_1d(grid::Grid.RealGrid) = plan_rfft(zeros(Float64, length(grid.t)))
+
+"""Whether `grid` is field-resolved (real) rather than an envelope grid."""
+_is_field_mode(::Grid.RealGrid) = true
+_is_field_mode(::Grid.TimeGrid) = false
+
+# ============================================================================
 # Top-level constructor
 # ============================================================================
 
@@ -943,6 +998,27 @@ The defaults reproduce the master script
                                     evaluation); `:frozen` is the legacy
                                     per-column [`FrozenRamanPolarEnv`](@ref).
                                     Results agree to rounding accuracy
+- `field_mode = false`            — propagate the real, carrier-resolved field on a
+                                    `Luna.Grid.RealGrid` instead of the complex envelope on
+                                    an `EnvGrid`. There is then no carrier/envelope split,
+                                    no dropped third-harmonic term and no negative-frequency
+                                    wrap; the cost is roughly 2× the memory and 5–10× the
+                                    time per delay point. The envelope path is untouched and
+                                    remains the default
+- `response = :auto`              — field-mode nonlinearity: `:nothg` (= `:auto`) for
+                                    `(3/4) ε₀ χ³ |E_a|² E`, the same physics content as the
+                                    envelope `Kerr_env` and hence the response for an
+                                    envelope-versus-field comparison; `:thg` for `ε₀ χ³ E³`,
+                                    which adds what the envelope drops. Ignored unless
+                                    `field_mode = true`
+- `ffac = 6`                      — field-mode nonlinear-grid sampling factor, forwarded to
+                                    `Grid.RealGrid`. 6 (the default) sizes the fine grid for
+                                    `E³`; 4 is enough for `:nothg` alone and typically
+                                    removes the oversampling entirely, halving memory and
+                                    per-step cost. It changes the grid, so use it only with
+                                    a convergence check against the default
+- `raman`                         — not implemented in field mode (see the error message
+                                    there for why)
 - `factored_linop = true`         — use Luna's lazy (factored) linear operator
                                     and normalisation, saving two field-sized
                                     arrays; bit-identical to the materialised
@@ -969,6 +1045,9 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
                        GDD = 0.0, TOD = 0.0,
                        raman::Bool = false, raman_fraction::Float64 = 0.18,
                        raman_impl::Symbol = :batched,
+                       field_mode::Bool = false,
+                       response::Symbol = :auto,
+                       ffac::Real = 6,
                        factored_linop::Bool = true,
                        store_window::Bool = true,
                        arraytype = Array,
@@ -986,12 +1065,25 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     end
 
     # --- Build Luna grids --------------------------------------------------
-    grid = Grid.EnvGrid(thickness, λ0, λlims, trange; fftsize=fftsize)
+    # `field_mode` swaps the envelope (analytic-field) grid for the field-resolved one.
+    # `RealGrid` has no `fftsize` control — its propagated grid is always the next power of
+    # two above 1.1 ωmax — so that keyword applies to the envelope path only.
+    grid = field_mode ? Grid.RealGrid(thickness, λ0, λlims, trange; ffac=ffac) :
+                        Grid.EnvGrid(thickness, λ0, λlims, trange; fftsize=fftsize)
     xygrid = Grid.FreeGrid(R, N)
 
     # --- Material dispersion + Kerr (+ optional Raman) nonlinearity -------
     χ3 = PhysData.χ3(material)
-    if raman
+    if field_mode
+        raman && error(
+            "raman=true is not implemented in field mode. The delayed response itself is " *
+            "available (Luna.Nonlinear.RamanPolarFieldBatched), but the nuclear fraction " *
+            "f_R below is defined in the ENVELOPE convention — the 3/2 that reconciles " *
+            "Kerr_env's internal 3/4 with the Raman kernel's 1/2 — and that factor does " *
+            "not carry over to a carrier-resolved field unexamined. Deriving it needs its " *
+            "own quasi-static consistency test, like the envelope one in the test suite.")
+        responses = _field_responses(response, χ3)
+    elseif raman
         # Split χ³ into an instantaneous electronic part and a delayed
         # nuclear part carrying the envelope-defined fraction
         # `raman_fraction` (the Blow–Wood f_R = 0.18 for silica), following
@@ -1045,7 +1137,10 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     _, energyfun_ω = Fields.energyfuncs(grid, xygrid)
 
     # --- 1-D reference spectrum (used by the HE₁₁ builder and as diagnostic)
-    FT1d = plan_fft(copy(grid.t))
+    # Complex on an envelope grid, real-to-complex on a field-resolved one: `GaussField`
+    # dispatches its time-domain shape on the grid but takes the plan from here, and
+    # `prop_taylor!` applies ϕ on the ABSOLUTE ω axis, which both grids carry.
+    FT1d = _plan_1d(grid)
     ϕ = [0.0, 0.0, GDD, TOD]  # up to 3rd order
     Eω = Fields.GaussField(; λ0=λ0, τfwhm=τfwhm, energy=energy, ϕ=ϕ)(grid, FT1d)
 
@@ -1064,6 +1159,19 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     extra_grid_metadata = merge(Dict{String,Any}(
                                     "raman" => raman ? 1 : 0,
                                     "raman_fraction" => raman_fraction,
+                                    # How the file was made. `field_mode` is also the
+                                    # marker every reader needs: a field-mode /grid/ω is a
+                                    # monotonic rfft half-spectrum, not the FFT-ordered
+                                    # relative-frequency axis of an envelope file, so it
+                                    # must NOT be fftshifted on load. Absent = envelope,
+                                    # which is what every pre-existing file is.
+                                    "field_mode" => field_mode ? 1 : 0,
+                                    "response" => _response_name(field_mode, response,
+                                                                 raman),
+                                    # `ffac` is the field grid's nonlinear-sampling factor
+                                    # (6 = sized for E³, 4 = sized for |E_a|²E only). It is
+                                    # not a field of Grid.RealGrid, so record it here.
+                                    "ffac" => field_mode ? float(ffac) : 0.0,
                                     # The MASK GEOMETRY, recorded so the file is
                                     # self-describing. Retrieval codes need d/D
                                     # = (spacing + D)/2D to build the smearing
@@ -1106,7 +1214,7 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
     # uploaded afterwards.
     ωd = Eωk_g12 isa Array ? grid.ω : Adapt.adapt(arraytype, collect(grid.ω))
 
-    return TGFROGSetup{typeof(linop),typeof(transform),typeof(FT),
+    return TGFROGSetup{typeof(grid),typeof(linop),typeof(transform),typeof(FT),
                        typeof(window),typeof(window_array),
                        typeof(Eωk_g12),typeof(ωd)}(
         λ0, τfwhm, energy, thickness, material, mask_diam, mask_spacing,
@@ -1114,6 +1222,44 @@ function build_setup(; λ0, τfwhm, energy, thickness, material,
         Eωk_g12, Eωk_t_base, ωd, Eω,
         window, window_array, window_suffix, combined_grid)
 end
+
+# ----- Field-mode response selector ----------------------------------------
+
+"""
+    _field_responses(response, χ3) -> Tuple
+
+The nonlinear response for a field-resolved (`RealGrid`) run.
+
+- `:nothg` (and `:auto`) — `(3/4) ε₀ χ³ |E_a|² E` via
+  `Luna.Nonlinear.Kerr_field_nothg`. This is the SAME physics content as the
+  envelope `Kerr_env`, evaluated on a carrier-resolved field, so an envelope-versus-field
+  comparison made with it isolates *representation* error with nothing else changed. It is
+  the default for exactly that reason.
+- `:thg` — `ε₀ χ³ E³` via `Luna.Nonlinear.Kerr_field`, which adds the third-harmonic
+  and counter-rotating terms the envelope drops. The difference between the two runs is
+  precisely what the envelope omits.
+
+!!! note "What `:thg` does and does not propagate on a UV window"
+    The third harmonic is generated on the fine grid and then discarded by the crop back to
+    the propagated grid whenever it falls outside the window (at λlims = (143, 600) nm the
+    3ω band of a 2 fs 260 nm pulse starts above ωmax). The within-band counter-rotating
+    terms are retained, and those are the real difference from the envelope. Propagating
+    the third harmonic itself needs λlims extended to ~λ0/3.
+"""
+function _field_responses(response::Symbol, χ3)
+    if response === :auto || response === :nothg
+        return (Nonlinear.Kerr_field_nothg(χ3),)
+    elseif response === :thg
+        return (Nonlinear.Kerr_field(χ3),)
+    else
+        error("field-mode `response` must be :auto, :nothg or :thg, got :$response")
+    end
+end
+
+"""Canonical name of the response actually used, for the output metadata."""
+_response_name(field_mode::Bool, response::Symbol, raman::Bool) =
+    field_mode ? (response === :auto ? "nothg" : string(response)) :
+                 (raman ? "kerr_env+raman" : "kerr_env")
 
 # ----- Window-set helper (single vs vector of windows) ---------------------
 
@@ -1167,10 +1313,16 @@ function _combined_grid(grid, xygrid, beam_meta::Dict,
     end
 
     # Always-present diagnostics.
-    It = abs2.(ifft(Eω))
+    # `Eω` is the grid's own spectral representation: FFT-ordered about the carrier on an
+    # EnvGrid, a monotonic rfft half-spectrum on a RealGrid. `_to_time` inverts whichever it
+    # is, and `_envelope_intensity` reduces the result to |A|² either way, so `It`/`Ito` mean
+    # the same physical thing in an envelope and a field-mode file.
+    Et = _to_time(grid, Eω)
+    It = _envelope_intensity(grid, Et)
     Iω = abs2.(Eω)
-    to, eo = Maths.oversample(grid.t, ifft(Eω); factor=8)
-    Ito = abs2.(eo)
+    # `Maths.oversample` has separate real and complex methods and picks the right one.
+    to, eo = Maths.oversample(grid.t, Et; factor=8)
+    Ito = _envelope_intensity(grid, eo)
     cg["Iω"]        = Iω
     cg["It"]        = It
     cg["To"]        = to
@@ -1178,6 +1330,10 @@ function _combined_grid(grid, xygrid, beam_meta::Dict,
     cg["τfwhm"]     = τfwhm
     cg["material"]  = string(material)
     cg["thickness"] = thickness
+    # `Grid.to_dict` writes every field of the grid struct, and `RealGrid` has no `ω0` — it
+    # propagates the field itself, not an envelope about a carrier. Readers key off
+    # /grid/ω0 unconditionally, so write the carrier explicitly in that case.
+    haskey(cg, "ω0") || (cg["ω0"] = 2π * PhysData.c / λ0)
 
     # Beam-specific metadata (Iω_beamlet for both models, w0/Δk/crossingθ for
     # Gaussian, a/f_coll/f_foc for HE₁₁).
@@ -1198,10 +1354,10 @@ function _combined_grid(grid, xygrid, beam_meta::Dict,
         phase = [Iω[i] > reg ? Eω[i] / sqrt(Iω[i]) : zero(eltype(Eω))
                  for i in eachindex(Eω)]
         Eω_beamlet = sqrt.(max.(Iω_beamlet, 0)) .* phase
-        et_beamlet = ifft(Eω_beamlet)
-        cg["It_beamlet"] = abs2.(et_beamlet)
+        et_beamlet = _to_time(grid, Eω_beamlet)
+        cg["It_beamlet"] = _envelope_intensity(grid, et_beamlet)
         _, eob_beamlet = Maths.oversample(grid.t, et_beamlet; factor=8)
-        cg["Ito_beamlet"] = abs2.(eob_beamlet)   # shares the "To" grid above
+        cg["Ito_beamlet"] = _envelope_intensity(grid, eob_beamlet)  # shares "To" above
         # The COMPLEX beamlet spectrum (amplitude and phase), stored as two
         # real datasets for cross-language portability (h5py reads HDF5.jl's
         # native complex compound awkwardly). This is the retrievable ground
@@ -1881,7 +2037,7 @@ _match_arraytype(Eωk, transform) =
         Adapt.adapt(typeof(transform.Eto).name.wrapper, Eωk) : Eωk
 
 """Delay phase angle ``-ωτ`` on the grid's frequency axis."""
-grid_delay_phase(grid::Grid.EnvGrid, τ::Real) = -grid.ω .* τ
+grid_delay_phase(grid::Grid.TimeGrid, τ::Real) = -grid.ω .* τ
 
 """
     simulate_delay_point(setup::TGFROGSetup, τi;
@@ -2549,6 +2705,10 @@ function load_simulated_scan(filename::AbstractString;
         g = f["grid"]
         ω_raw   = read(g["ω"])
         ω0      = read(g["ω0"])
+        # Field-mode files carry a monotonic rfft half-spectrum; envelope files carry the
+        # FFT-ordered relative-frequency axis that needs shifting. Absent marker = envelope,
+        # so every file written before field mode existed loads exactly as before.
+        field_mode = haskey(g, "field_mode") && read(g["field_mode"]) != 0
         t       = read(g["t"])
         Iω_raw  = read(g["Iω"])
         It      = read(g["It"])
@@ -2590,13 +2750,15 @@ function load_simulated_scan(filename::AbstractString;
             win = win_full[:, z_idx, :]                  # (Nω, Nτ)
         end
 
-        # --- Apply fftshift along the ω axis (dim 1) ---
-        ω           = FFTW.fftshift(ω_raw)
-        Iω          = FFTW.fftshift(Iω_raw)
-        trace       = FFTW.fftshift(win, 1)
-        Iω_beamlet  = isnothing(Iω_beam_raw) ? nothing : FFTW.fftshift(Iω_beam_raw)
+        # --- Put the ω axis in ascending order (dim 1) ---
+        shift(x) = field_mode ? x : FFTW.fftshift(x)
+        shift(x, d) = field_mode ? x : FFTW.fftshift(x, d)
+        ω           = shift(ω_raw)
+        Iω          = shift(Iω_raw)
+        trace       = shift(win, 1)
+        Iω_beamlet  = isnothing(Iω_beam_raw) ? nothing : shift(Iω_beam_raw)
 
-        nt = (; ω, ω0, t, τ, trace, Iω, It, τfwhm)
+        nt = (; ω, ω0, t, τ, trace, Iω, It, τfwhm, field_mode)
         nt = isnothing(zsave)       ? nt : merge(nt, (; zsave))
         nt = isnothing(Iω_beamlet)  ? nt : merge(nt, (; Iω_beamlet))
         nt = isnothing(It_beam_raw) ? nt : merge(nt, (; It_beamlet=It_beam_raw))

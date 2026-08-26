@@ -1111,4 +1111,226 @@ end
     @test h_noϕ ≈ h_ϕ
 end
 
+# =============================================================================
+# Field mode: propagate the real, carrier-resolved field on a Luna RealGrid
+# =============================================================================
+
+@testset "field mode: grid, responses and metadata" begin
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.25e-3, zmask=0.1,
+                                    apod=:supergauss, apod_param=16)
+    base = (; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6, thickness=1e-6, material=:SiO2,
+              mask_diam=1.0e-3, mask_spacing=0.5e-3, beam, window,
+              trange=20e-15, λlims=(200e-9, 400e-9), R=40e-6, N=32)
+
+    se = TS.build_setup(; base...)
+    sf = TS.build_setup(; base..., field_mode=true)
+
+    @test se.grid isa Grid.EnvGrid
+    @test sf.grid isa Grid.RealGrid
+    @test sf.grid.ω[1] == 0                       # rfft half-spectrum starts at DC
+    @test issorted(sf.grid.ω)                     # ...and is monotonic, unlike an EnvGrid
+    @test !issorted(se.grid.ω)
+    # every field-sized array follows the grid's ω axis
+    @test size(sf.Eωk_g12, 1) == length(sf.grid.ω)
+    @test size(sf.window_array, 1) == length(sf.grid.ω)
+    @test length(sf.Eω) == length(sf.grid.ω)
+    @test sf.Eω isa Vector{ComplexF64}            # an rfft output is complex either way
+
+    # --- metadata contract ---
+    @test se.combined_grid["field_mode"] == 0
+    @test sf.combined_grid["field_mode"] == 1
+    @test se.combined_grid["response"] == "kerr_env"
+    @test sf.combined_grid["response"] == "nothg"
+    @test TS.build_setup(; base..., field_mode=true,
+                          response=:thg).combined_grid["response"] == "thg"
+    @test sf.combined_grid["ffac"] == 6.0
+    @test se.combined_grid["ffac"] == 0.0
+    # RealGrid has no ω0 field, but readers key off /grid/ω0 unconditionally
+    @test sf.combined_grid["ω0"] ≈ 2π*PhysData.c/260e-9
+    @test se.combined_grid["ω0"] ≈ 2π*PhysData.c/260e-9
+
+    # --- the pulse is the same pulse in either representation ---
+    # Luna builds √I·cos(ω₀t) on a real grid and √I·exp(iΔωt) on an envelope grid, so the
+    # ENVELOPE intensity |A|² agrees; that is what the metadata stores in both modes.
+    @test maximum(sf.combined_grid["It"]) ≈ maximum(se.combined_grid["It"]) rtol=1e-4
+    @test Luna.Maths.fwhm(sf.grid.t, sf.combined_grid["It"]) ≈
+          Luna.Maths.fwhm(se.grid.t, se.combined_grid["It"]) rtol=1e-2
+    @test length(sf.combined_grid["It"]) == length(sf.grid.t)
+    @test length(sf.combined_grid["Ito"]) == length(sf.combined_grid["To"])
+    # ...and so does the energy actually put into each beamlet
+    @test sf.energyfun_ω(sf.Eωk_t_base) ≈ se.energyfun_ω(se.Eωk_t_base) rtol=1e-3
+    @test sf.energyfun_ω(sf.Eωk_g12) ≈ se.energyfun_ω(se.Eωk_g12) rtol=1e-3
+
+    # --- ffac ---
+    s4 = TS.build_setup(; base..., field_mode=true, ffac=4)
+    @test length(s4.grid.to) == length(s4.grid.t)   # no oversampling at ffac = 4
+    @test length(sf.grid.to) > length(sf.grid.t)    # ...but there is at the default 6
+    @test s4.combined_grid["ffac"] == 4.0
+
+    # --- refusals ---
+    @test_throws ErrorException TS.build_setup(; base..., field_mode=true, raman=true)
+    @test_throws ErrorException TS.build_setup(; base..., field_mode=true, response=:bogus)
+    # the envelope path is unaffected by the new keywords
+    @test_throws ArgumentError TS.build_setup(; base..., field_mode=true, ffac=1)
+end
+
+@testset "field mode: :nothg and :thg agree when 3ω is outside the window" begin
+    # Algebraically, the fundamental-band content of E³ is exactly (3/4)Re(|E_a|²E_a) =
+    # (3/4)|E_a|²E. So on a window that excludes the third harmonic entirely — here
+    # 200-400 nm with a 260 nm carrier, whose 3ω band starts near 87 nm — the two
+    # responses are the same operator and the propagations must agree to rounding.
+    # Where the bands DO overlap (a 1 fs pulse on the production window) they differ, and
+    # that difference is the physics the field mode exists to measure.
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.25e-3, zmask=0.1,
+                                    apod=:supergauss, apod_param=16)
+    base = (; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6, thickness=2e-6, material=:SiO2,
+              mask_diam=1.0e-3, mask_spacing=0.5e-3, beam, window,
+              trange=20e-15, λlims=(200e-9, 400e-9), R=40e-6, N=32, field_mode=true)
+    args = (; zsave=2, init_dz=5e-7, rtol=1e-10, twin_period=1_000_000_000)
+    on = TS.simulate_delay_point(TS.build_setup(; base..., response=:nothg), 0.0; args...)
+    ot = TS.simulate_delay_point(TS.build_setup(; base..., response=:thg), 0.0; args...)
+    for k in (:Iω_win, :Iω_win_reimaged, :Iω_full)
+        a, b = getfield(on, k), getfield(ot, k)
+        @test maximum(abs, a .- b) / maximum(a) < 1e-8
+    end
+end
+
+@testset "field mode: field-versus-envelope trace agreement" begin
+    # The port check, scaled down: the same geometry run both ways must give the same
+    # trace. The two grids have different ω axes and different bin normalisations, so the
+    # comparison is between PHYSICAL spectral densities on the common band — |E|² divided
+    # by Δω² (the ω part of `Fields.energyfuncs`' prefactor; the transverse part is common
+    # to both and cancels), splined onto one axis.
+    #
+    # Measured on this configuration (2 fs, 143-600 nm, 5 µm of silica): 3.2e-4 of trace
+    # peak, FLAT in depth (3.19, 3.19, 3.22, 3.37 e-4 at 0.5, 1, 2, 5 µm) and unchanged to
+    # three digits when the pulse energy is dropped by a factor of 100. Depth-independent
+    # and energy-independent means it is grid bookkeeping and spline interpolation, not
+    # nonlinear physics — which is what "the port is wired correctly" looks like. The
+    # interpolation part is confirmed by it GROWING for longer pulses (6.4e-4 at 4 fs,
+    # 1.6e-3 at 8 fs), whose narrower spectra are sampled by fewer points.
+    #
+    # It is much larger (1.3e-2) on a 200-400 nm window, because there the envelope grid's
+    # relative-frequency window clips a 2 fs 260 nm spectrum. That is a property of the
+    # toy window, not of the port, and it is exactly the kind of thing the field mode
+    # exists to expose.
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.25e-3, zmask=0.1,
+                                    apod=:supergauss, apod_param=16)
+    base = (; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6, thickness=5e-6, material=:SiO2,
+              mask_diam=1.0e-3, mask_spacing=0.5e-3, beam, window,
+              trange=120e-15, λlims=(143e-9, 600e-9), R=40e-6, N=32)
+    zs = [1e-6, 2e-6, 5e-6]
+    args = (; zsave=zs, init_dz=2.5e-7, rtol=1e-9, twin_period=1_000_000_000)
+    oe = TS.simulate_delay_point(TS.build_setup(; base...), 0.0; args...)
+    sf = TS.build_setup(; base..., field_mode=true)
+    of = TS.simulate_delay_point(sf, 0.0; args...)
+
+    # ascending ω axis and Δω-normalised spectral density, per grid type
+    function density(grid, I)
+        if grid isa Grid.RealGrid
+            grid.ω, I ./ grid.ω[end]^2
+        else
+            (FFTW.fftshift(grid.ω),
+             FFTW.fftshift(I, 1) ./ (length(grid.ω)*(grid.ω[2]-grid.ω[1]))^2)
+        end
+    end
+    se = TS.build_setup(; base...)
+    rs = map(1:length(zs)) do iz
+        ωe, De = density(se.grid, oe.Iω_win[:, iz])
+        ωf, Df = density(sf.grid, of.Iω_win[:, iz])
+        ωc = collect(range(max(minimum(ωe[ωe .> 0]), ωf[2]),
+                           min(maximum(ωe), ωf[end]), 600))
+        A = Luna.Maths.CSpline(ωe, De).(ωc)
+        B = Luna.Maths.CSpline(ωf, Df).(ωc)
+        m = A .> 1e-3*maximum(A)
+        sqrt(sum(abs2, (A .- B)[m]) / sum(abs2, A[m]))
+    end
+    @test all(r -> r < 2e-3, rs)
+    # ...and, the point of reporting it per depth: it must not GROW with propagation.
+    @test last(rs) < 2*first(rs)
+end
+
+@testset "field mode: run_scan / load_simulated_scan round trip" begin
+    # The whole file contract end to end. A field-mode file's /grid/ω is a monotonic rfft
+    # half-spectrum with no ω0 field on the grid struct, so this is where a metadata slip
+    # would show up as a silently scrambled trace rather than an error.
+    beam   = TS.HE11Beam(125e-6, 5.0, 0.1)
+    window = TS.PhysicalMaskWindow(holex=-0.75e-3, holey=-0.75e-3,
+                                    holediam=0.25e-3, zmask=0.1,
+                                    apod=:supergauss, apod_param=16)
+    setup_args = (; λ0=260e-9, τfwhm=2e-15, energy=0.2e-6, thickness=1e-6,
+                    material=:SiO2, mask_diam=1.0e-3, mask_spacing=0.5e-3,
+                    beam, window, trange=20e-15, λlims=(200e-9, 400e-9),
+                    R=40e-6, N=16, field_mode=true)
+    mktempdir() do tmpdir
+        cd(tmpdir) do
+            TS.run_scan(setup_args, [-1e-15, 1e-15]; scan_name="fieldselftest",
+                        exec=Luna.Scans.LocalExec(), zsave=2, init_dz=5e-7, rtol=1e-6)
+            collected = "fieldselftest_collected.h5"
+            @test isfile(collected)
+            HDF5.h5open(collected) do f
+                @test read(f["grid"]["field_mode"]) == 1
+                @test read(f["grid"]["response"]) == "nothg"
+                @test read(f["grid"]["ffac"]) == 6.0
+                @test read(f["grid"]["ω0"]) ≈ 2π*PhysData.c/260e-9
+                @test read(f["grid"]["delay_convention"]) == "gate"
+                @test issorted(read(f["grid"]["ω"]))
+            end
+            nt = TS.load_simulated_scan(collected)
+            @test nt.field_mode
+            @test issorted(nt.ω)
+            @test nt.ω[1] == 0                       # untouched: no fftshift applied
+            @test size(nt.trace) == (length(nt.ω), 2)
+            @test all(isfinite, nt.trace)
+            # ...and recomputing the same points must reproduce the file exactly
+            res = TS.verify_against_collected(setup_args, collected, [1, 2];
+                                              zsave=2, init_dz=5e-7, rtol=1e-6)
+            for point in res, (k, v) in point
+                startswith(k, "Iω") && !occursin('|', k) && @test v < 1e-12
+            end
+        end
+    end
+end
+
+@testset "field mode: load_simulated_scan does not fftshift a monotonic axis" begin
+    # A field-mode /grid/ω is already ascending; shifting it would scramble the trace
+    # against its own axis. Files with no marker are envelope files and must shift, which
+    # is what every file written before field mode existed relies on.
+    function writefile(fn, field_mode)
+        Nω, nz, Nτ = 8, 1, 3
+        ω = field_mode ? collect(1.0:Nω) : FFTW.fftshift(collect(1.0:Nω))
+        HDF5.h5open(fn, "w") do f
+            g = HDF5.create_group(f, "grid")
+            g["ω"] = ω
+            g["ω0"] = 4.5
+            g["t"] = collect(1.0:Nω)
+            g["Iω"] = collect(1.0:Nω)
+            g["It"] = collect(1.0:Nω)
+            g["τfwhm"] = 2e-15
+            field_mode && (g["field_mode"] = 1)
+            sv = HDF5.create_group(f, "scanvariables")
+            sv["τ"] = collect(1.0:Nτ)
+            f["Iω_win"] = reshape(repeat(collect(1.0:Nω), nz*Nτ), Nω, nz, Nτ)
+        end
+    end
+    mktempdir() do dir
+        fnf = joinpath(dir, "field.h5"); writefile(fnf, true)
+        fne = joinpath(dir, "env.h5");   writefile(fne, false)
+        nf = TS.load_simulated_scan(fnf)
+        ne = TS.load_simulated_scan(fne)
+        @test nf.field_mode
+        @test !ne.field_mode
+        @test issorted(nf.ω) && issorted(ne.ω)
+        @test nf.ω == collect(1.0:8)                    # untouched
+        @test nf.trace[:, 1] == collect(1.0:8)          # ...and so is the trace
+        @test ne.trace[:, 1] == FFTW.fftshift(collect(1.0:8))
+    end
+end
+
 end # @testset "Trace simulation"

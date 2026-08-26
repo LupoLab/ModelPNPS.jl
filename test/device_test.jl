@@ -65,14 +65,18 @@ if have_jlarrays
         pinv::AbstractFFTs.ScaledPlan
         JLPlan{T, N, P}(hp, sz, dims) where {T, N, P} = new{T, N, P}(hp, sz, dims)
     end
-    JLPlan(hp, sz::NTuple{N, Int}, dims) where {N} =
-        JLPlan{ComplexF64, N, typeof(hp)}(hp, sz, dims)
+    JLPlan(hp, sz::NTuple{N, Int}, dims, T=ComplexF64) where {N} =
+        JLPlan{T, N, typeof(hp)}(hp, sz, dims)
     Base.size(p::JLPlan) = p.sz
     Base.eltype(::JLPlan{T}) where {T} = T
     AbstractFFTs.plan_fft(x::JLArrays.JLArray, dims) =
         JLPlan(FFTW.plan_fft(Array(x), dims), size(x), dims)
+    # real-to-complex, for field mode (`build_setup(field_mode=true)`). `sz` is the REAL
+    # array's size, which is also what sets the inverse's normalisation.
+    AbstractFFTs.plan_rfft(x::JLArrays.JLArray{Float64}, dims) =
+        JLPlan(FFTW.plan_rfft(Array(x), dims), size(x), dims, Float64)
     AbstractFFTs.plan_inv(p::JLPlan) =
-        AbstractFFTs.ScaledPlan(JLPlan(inv(p.hp).p, p.sz, p.dims),
+        AbstractFFTs.ScaledPlan(JLPlan(inv(p.hp).p, p.sz, p.dims, ComplexF64),
                                 AbstractFFTs.normalization(Float64, p.sz, p.dims))
     Base.:*(p::JLPlan, x::JLArrays.JLArray) = JLArrays.JLArray(p.hp * Array(x))
     LinearAlgebra.mul!(y::JLArrays.JLArray, p::JLPlan, x::JLArrays.JLArray) =
@@ -315,6 +319,50 @@ if have_jlarrays
                                            filename=fn)
             @test isapprox(outs.Iω_win, outh.Iω_win; rtol=1e-8)
         end
+    end
+
+    @testset "field mode on device" begin
+        # Field mode is the reason the device path had to grow at all: a RealGrid always
+        # takes TransFree's GENERAL path (the inverse of a real-to-complex plan destroys
+        # its input, which on the fast path would be the solver's state), and that path
+        # was host-only and serial. Both responses are covered — :thg is pointwise, :nothg
+        # is batched, and they take different branches through the transform.
+        for response in (:nothg, :thg)
+            kw = (; base_kwargs..., field_mode=true, response)
+            sh = TS.build_setup(; kw...)
+            sd = TS.build_setup(; kw..., arraytype=JLArray)
+            @test sd.grid isa Grid.RealGrid
+            @test Utils.backend(sd.transform.Eto) isa Utils.DeviceBackend
+            @test eltype(sd.transform.Eto) === Float64        # a real time-domain buffer
+            @test Utils.backend(sd.Eωk_g12) isa Utils.DeviceBackend
+            @test sd.Eω isa Vector{ComplexF64}                # rfft output, host-built
+            outh = TS.simulate_delay_point(sh, 0.0; nz=2, init_dz=5e-7, rtol=1e-8)
+            outd = TS.simulate_delay_point(sd, 0.0; nz=2, init_dz=5e-7, rtol=1e-8)
+            for k in (:Iω_win, :Iω_win_reimaged, :Iω_full)
+                @test isapprox(getfield(outd, k), getfield(outh, k); rtol=1e-8)
+                @test getfield(outd, k) isa Array
+            end
+        end
+
+        # beamlets_on_host is the memory lever that matters most in field mode: those two
+        # fields are 9 GiB at production shape, on a card the field grid already fills.
+        kw = (; base_kwargs..., field_mode=true)
+        sb = TS.build_setup(; kw..., arraytype=JLArray, beamlets_on_host=true)
+        @test Utils.backend(sb.Eωk_g12) isa Utils.CPUBackend
+        @test Utils.backend(sb.transform.Eto) isa Utils.DeviceBackend
+        ob = TS.simulate_delay_point(sb, 0.5e-15; nz=2, init_dz=5e-7, rtol=1e-8)
+        oh = TS.simulate_delay_point(TS.build_setup(; kw...), 0.5e-15;
+                                     nz=2, init_dz=5e-7, rtol=1e-8)
+        @test isapprox(ob.Iω_win, oh.Iω_win; rtol=1e-8)
+
+        # ffac = 4 removes the oversampling, which changes which buffers exist; it must
+        # still run on a device and agree with the host.
+        s4h = TS.build_setup(; kw..., ffac=4)
+        s4d = TS.build_setup(; kw..., ffac=4, arraytype=JLArray)
+        @test length(s4d.grid.to) == length(s4d.grid.t)
+        @test isapprox(TS.simulate_delay_point(s4d, 0.0; nz=2, init_dz=5e-7, rtol=1e-8).Iω_win,
+                       TS.simulate_delay_point(s4h, 0.0; nz=2, init_dz=5e-7, rtol=1e-8).Iω_win;
+                       rtol=1e-8)
     end
 else
     @info "JLArrays not available — skipping ModelPNPS device tests"
