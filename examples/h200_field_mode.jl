@@ -45,9 +45,14 @@
 #   ~63 GiB. FFAC = 4 (see below) takes :nothg to ~68 GiB.
 #
 #   So: an A40 (44 GiB) cannot run this at all, an 80 GB H100 fits :thg and :nothg-at-
-#   FFAC-4, and only an H200 (141 GiB) fits everything. The RHS is also ~7-10x the
-#   envelope's, which is why a full 200-delay scan is not the target — take a SUBSET of
-#   delays ON the production τ grid points so they compare directly.
+#   FFAC-4, and only an H200 (141 GiB) fits everything.
+#
+#   Time: measured 3.0x the envelope per delay point at N = 64 and 3.3x at N = 128, at
+#   MATCHED step counts (9 vs 9, 8 vs 8) — so it is a clean per-step ratio, not a
+#   step-count artefact. Combined with the memory, a full 200-delay field-mode scan is on
+#   the order of ten times the envelope campaign's resource. Take a SUBSET of delays ON the
+#   production τ grid points instead, so each one compares directly with no interpolation
+#   in τ; the comparison does not need all 200.
 #
 # FFAC — read before changing it.
 #   Luna's RealGrid samples the nonlinear grid at 6x fmax, which is what E³ needs. The

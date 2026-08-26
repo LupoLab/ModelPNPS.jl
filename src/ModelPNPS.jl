@@ -59,6 +59,18 @@ Three `AbstractSignalWindow` subtypes are provided:
   the smooth-edge advantage. Used to isolate the two effects (smooth-edge
   vs ω-scaling) within the Gaussian model.
 
+# Two field representations
+
+By default the propagation is Luna's complex **envelope** (`Grid.EnvGrid`): an analytic
+field about a carrier. `build_setup(field_mode=true)` instead propagates the real,
+carrier-resolved field on a `Grid.RealGrid`, which has no envelope/carrier split, no
+dropped third-harmonic term and no negative-frequency wrap. That matters when the pulse is
+only a cycle or two long — at 260 nm a 1 fs pulse is 1.15 optical cycles — where the
+envelope approximation is marginal by construction and the two representations can be
+compared directly. It costs roughly twice the memory and three times the time per delay point,
+so it is a diagnostic, not the production default. See `build_setup`'s `field_mode`,
+`response` and `ffac` keywords.
+
 # High-level usage
 
 ```julia
@@ -1002,9 +1014,10 @@ The defaults reproduce the master script
                                     `Luna.Grid.RealGrid` instead of the complex envelope on
                                     an `EnvGrid`. There is then no carrier/envelope split,
                                     no dropped third-harmonic term and no negative-frequency
-                                    wrap; the cost is roughly 2× the memory and 5–10× the
-                                    time per delay point. The envelope path is untouched and
-                                    remains the default
+                                    wrap; the cost is roughly 2× the memory and 3×
+                                    the time per delay point (measured 3.0× at N = 64 and
+                                    3.3× at N = 128, at matched step counts). The envelope
+                                    path is untouched and remains the default
 - `response = :auto`              — field-mode nonlinearity: `:nothg` (= `:auto`) for
                                     `(3/4) ε₀ χ³ |E_a|² E`, the same physics content as the
                                     envelope `Kerr_env` and hence the response for an
