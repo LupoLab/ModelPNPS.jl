@@ -526,15 +526,18 @@ end
     center_pulse!(p::InputPulseData; oversample=8) -> (p, tshift)
 
 Remove the linear spectral-phase component so the temporal intensity envelope
-peaks at t = 0, returning the applied shift `tshift` [s] (positive = the pulse
-arrived late and was advanced). A pure linear phase is physically irrelevant;
-numerically, centring minimises the `trange` the simulation needs to hold the
-pulse plus the delay scan, and — more importantly — it is what makes the
-spectrum interpolatable: a pulse far from its grid's natural time origin has a
-spectral phase rotating by up to π per sample, which no Re/Im interpolation
-can resample ([`interp_input_pulse`](@ref) warns if it sees this). Requires an
-(approximately) uniform ω grid. The returned shift is reported modulo the
-data grid's time period (the on-grid phase is identical for any branch).
+peaks at the data FFT's natural origin (array index 1), returning the applied
+shift `tshift` [s] (positive = the pulse arrived late and was advanced). A pure
+linear phase is physically irrelevant; numerically, centring minimises the
+`trange` the simulation needs to hold the pulse plus the delay scan, and — more
+importantly — it is what makes the spectrum interpolatable: a pulse far from
+its grid's natural time origin has a spectral phase rotating by up to π per
+sample, which no Re/Im interpolation can resample
+([`interp_input_pulse`](@ref) warns if it sees this). `interp_input_pulse` then
+re-anchors the interpolated field at `t = 0`, the middle sample of Luna's
+centred target time grid. Requires an (approximately) uniform ω grid. The
+returned shift is reported modulo the data grid's time period (the on-grid
+phase is identical for any branch).
 """
 function center_pulse!(p::InputPulseData; oversample::Int=8)
     dωs = diff(p.ω)
@@ -560,7 +563,11 @@ The pulse's complex spectrum on `grid.ω` (the grid's ABSOLUTE frequency axis),
 zero outside the data's range. Real and imaginary parts are interpolated
 separately with cubic B-splines, which is accurate when the data grid is finer
 than the simulation grid — a warning is emitted if it is not (then spectral
-detail is being invented between samples; supply denser data instead).
+detail is being invented between samples; supply denser data instead). The
+input is expected to have been moved to its data FFT's natural origin with
+[`center_pulse!`](@ref). After interpolation, the field is shifted to the
+middle sample of Luna's centred target time grid, matching Luna's native
+`Fields.DataField` convention.
 """
 function interp_input_pulse(grid::Grid.TimeGrid, p::InputPulseData)
     dω_data = (last(p.ω) - first(p.ω)) / (length(p.ω) - 1)
@@ -587,6 +594,14 @@ function interp_input_pulse(grid::Grid.TimeGrid, p::InputPulseData)
         lo <= ω <= hi || continue
         Eω[i] = complex(spl_r(ω), spl_i(ω))
     end
+    # `center_pulse!` deliberately removes the source grid's time-origin phase,
+    # leaving the pulse at FFT array index 1 so its Re/Im spectrum is smooth
+    # enough to interpolate. Luna time grids label that index as -T/2 and put
+    # physical t=0 at the middle sample. Re-apply the target grid's half-window
+    # delay after interpolation, exactly as Luna.Fields.DataField does, so both
+    # the propagated beamlets and the stored temporal diagnostics are centred.
+    τgrid = length(grid.t) * (grid.t[2] - grid.t[1]) / 2
+    @. Eω *= exp(-1im * grid.ω * τgrid)
     return Eω
 end
 
