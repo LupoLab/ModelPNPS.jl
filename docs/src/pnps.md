@@ -1,3 +1,7 @@
+```@meta
+CurrentModule = ModelPNPS
+```
+
 # The PNPS Framework
 
 ModelPNPS is organised around the **PNPS** (Parametrized Nonlinear Process
@@ -43,16 +47,16 @@ parametrization)** pair, and its standard name follows the pattern
 | **SD**  | ``\lvert\tilde{E}\rvert^2\tilde{E}`` | self-diffraction |
 | **PG**  | ``\lvert\tilde{E}\rvert^2\tilde{E}`` | polarization gating |
 | **TG**  | degenerate four-wave mixing | transient grating; two gate beams + test |
-| **X-**  | ``\tilde{E}\,\tilde{E}_\text{ref}`` (cross term) | cross-correlation with a known reference |
+| **X-** | ``\tilde{E}\,\tilde{E}_\text{ref}`` | cross-correlation with a reference |
 
 ## Parametrizations
 
-| Parametrization | Variable ``\delta`` | Filter ``\mathcal{H}_\delta(\omega)`` | Technique family |
-|-----------------|---------------------|----------------------------------------|------------------|
-| **Delay**       | pulse delay ``\tau``    | ``e^{i(\omega+\Omega_0)\tau}``         | FROG |
-| **Glass insertion** | glass thickness ``z`` | ``e^{i(\omega+\Omega_0)\,k(\omega)\,z}`` | d-scan |
+| Parametrization | Variable | Filter | Family |
+|-----------------|----------|--------|--------|
+| **Delay** | delay ``\tau`` | ``e^{i(\omega+\Omega_0)\tau}`` | FROG |
+| **Glass insertion** | thickness ``z`` | ``e^{i(\omega+\Omega_0)k(\omega)z}`` | d-scan |
 | **Pattern shift** | phase-pattern shift | ``e^{\pm i(\omega+\Omega_0)\delta}``   | MIIPS |
-| **Position**    | spatial / scan position | spatial filtering | (time-domain) ptychography |
+| **Position** | spatial/scan position | spatial filtering | ptychography |
 
 ## Roadmap
 

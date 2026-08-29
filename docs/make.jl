@@ -16,6 +16,7 @@ makedocs(;
         edit_link = "main",
         assets = String[],
         mathengine = Documenter.MathJax3(),
+        size_threshold_warn = 150 * 1024,
     ),
     pages = [
         "Home" => "index.md",
@@ -25,7 +26,9 @@ makedocs(;
     ],
 )
 
-deploydocs(;
-    repo = "github.com/jtravs/ModelPNPS.jl",
-    devbranch = "main",
-)
+if get(ENV, "CI", "false") == "true"
+    deploydocs(;
+        repo = "github.com/jtravs/ModelPNPS.jl",
+        devbranch = "main",
+    )
+end

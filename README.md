@@ -1,6 +1,6 @@
 # ModelPNPS
 
-[![Build Status](https://github.com/jtravs/ModelPNPS.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/jtravs/ModelPNPS.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Build Status][ci-badge]][ci-workflow]
 
 **High-fidelity forward modelling of PNPS pulse-characterisation traces.**
 
@@ -48,7 +48,7 @@ technique is a **(nonlinear process × parametrization)** pair:
 | SHG-FROG | second-harmonic generation | delay | ⏳ pending Luna SHG/SFG support |
 | THG-FROG | third-harmonic generation | delay | ⏳ planned |
 | X-FROG (SHG/SD/THG) | cross-correlation | delay | ⏳ planned |
-| SHG-d-scan | second-harmonic generation | glass insertion | ⏳ pending Luna SHG/SFG support |
+| SHG-d-scan | second-harmonic generation | glass insertion | ⏳ blocked on Luna |
 | SD-d-scan | self-diffraction | glass insertion | 🔜 planned |
 | Time-domain ptychography | SHG/THG/SD | position | ⏳ planned |
 
@@ -59,7 +59,7 @@ in the General registry) and requires Julia 1.12 or later. From the Julia REPL:
 
 ```julia
 import Pkg
-Pkg.add(url="https://github.com/jtravs/ModelPNPS.jl")
+Pkg.add(; url = "https://github.com/jtravs/ModelPNPS.jl")
 ```
 
 ## Quick start
@@ -117,4 +117,9 @@ grid sizing, and the PNPS framework — is built with
 [Documenter.jl](https://documenter.juliadocs.org/) under [`docs/`](docs/).
 
 ## Credits
-ModelPNPS is jointly developed by John Travers ([@jtravs](https://github.com/jtravs)) and Chris Brahms ([@chrisbrahms](https://github.com/chrisbrahms)).
+ModelPNPS is jointly developed by John Travers
+([@jtravs](https://github.com/jtravs)) and Chris Brahms
+([@chrisbrahms](https://github.com/chrisbrahms)).
+
+[ci-badge]: https://github.com/jtravs/ModelPNPS.jl/actions/workflows/CI.yml/badge.svg?branch=main
+[ci-workflow]: https://github.com/jtravs/ModelPNPS.jl/actions/workflows/CI.yml?query=branch%3Amain

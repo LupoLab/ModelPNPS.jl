@@ -1,3 +1,7 @@
+```@meta
+CurrentModule = ModelPNPS
+```
+
 # Trace Simulation
 
 ModelPNPS generates synthetic TG-FROG (Transient Grating FROG) spectrograms by
@@ -107,7 +111,8 @@ exec = Scans.SlurmExec(@__FILE__, length(τ); memory="18G", arraymode=:batch)
 run_scan(setup, τ; scan_name="my_mask_run", exec)
 ```
 
-See [`examples/tgfrog_simulation_mask_2fs.jl`](https://github.com/jtravs/ModelPNPS.jl/blob/main/examples/tgfrog_simulation_mask_2fs.jl)
+See the
+[`tgfrog_simulation_mask_2fs.jl` example][mask-example]
 (and the 1 fs variant) for the full annotated scripts.
 
 ## Worked example: Gaussian-beam scheme
@@ -137,7 +142,11 @@ exec = Scans.SlurmExec(@__FILE__, length(τ); memory="18G", arraymode=:batch)
 run_scan(setup, τ; scan_name="my_gaussian_run", exec)
 ```
 
-See [`examples/tgfrog_simulation_gaussian.jl`](https://github.com/jtravs/ModelPNPS.jl/blob/main/examples/tgfrog_simulation_gaussian.jl).
+See the
+[`tgfrog_simulation_gaussian.jl` example][gaussian-example].
+
+[mask-example]: https://github.com/jtravs/ModelPNPS.jl/blob/main/examples/tgfrog_simulation_mask_2fs.jl
+[gaussian-example]: https://github.com/jtravs/ModelPNPS.jl/blob/main/examples/tgfrog_simulation_gaussian.jl
 
 ## Spatial grid sizing
 
