@@ -75,6 +75,24 @@ import Random: MersenneTwister, Xoshiro
             safety = 3.0
         )
         @test N2 >= N
+
+        # Self-diffraction k-space containment. Its `2k₁ - k₂` signal sits at 3s/2
+        # from the axis (s = spacing + diam, centre to centre) plus a beam radius,
+        # which bounds the k-content DIRECTLY — so unlike the boxcar there is no
+        # extra factor of three, and the requirement is the smaller of the two here.
+        R_sd, N_sd = TS.optimal_spatial_grid(
+            f, mask_diam, mask_spc, λmin, λmax;
+            geometry = :sd
+        )
+        kmax_sd = π * N_sd / (2R_sd)
+        x_max_sd = 1.5 * (mask_spc + mask_diam) + mask_diam / 2
+        @test kmax_sd >= 1.5 * 2π * x_max_sd / (λmin * f) * (1 - 1.0e-12)
+
+        # An unknown layout is rejected rather than silently treated as :tg.
+        @test_throws ArgumentError TS.optimal_spatial_grid(
+            f, mask_diam, mask_spc, λmin, λmax;
+            geometry = :boxcar
+        )
     end
 
     # -----------------------------------------------------------------------------
@@ -527,6 +545,53 @@ import Random: MersenneTwister, Xoshiro
         nb = cgg["Iω_beamlet"] ./ maximum(cgg["Iω_beamlet"])
         ni = cgg["Iω"] ./ maximum(cgg["Iω"])
         @test maximum(abs.(nb .- ni)) < 5.0e-2
+    end
+
+    # -----------------------------------------------------------------------------
+    @testset "build_setup geometry keyword" begin
+        beam = TS.HE11Beam(125.0e-6, 5.0, 0.1)
+        window = TS.PhysicalMaskWindow(
+            holex = -0.75e-3, holey = -0.75e-3,
+            holediam = 0.25e-3, zmask = 0.1
+        )
+        base = (;
+            λ0 = 260.0e-9, τfwhm = 2.0e-15, energy = 0.2e-6,
+            thickness = 10.0e-6, material = :SiO2,
+            mask_diam = 1.0e-3, mask_spacing = 0.5e-3,
+            window,
+            trange = 20.0e-15, λlims = (200.0e-9, 400.0e-9),
+            R = 40.0e-6, N = 32,
+        )
+
+        # Self-diffraction builds TWO beams, not three: `build_beamlets` returns
+        # `nothing` for the second gate, so the stored "gate pair" is a single
+        # beamlet. The two SD holes sit symmetrically about the axis and so cut
+        # equal shares of the HE₁₁ profile — the layout is chosen for exactly that,
+        # since the SD signal E²G* does not cancel an energy asymmetry.
+        ssd = TS.build_setup(; base..., beam, geometry = :sd)
+        @test ssd.combined_grid["geometry"] == "sd"
+        s_cc = 0.5e-3 + 1.0e-3
+        @test ssd.combined_grid["sd_separation_cc"] ≈ s_cc
+        @test ssd.combined_grid["sd_signal_x"] ≈ -1.5 * s_cc
+        @test ssd.energyfun_ω(ssd.Eωk_g12) ≈
+            ssd.energyfun_ω(ssd.Eωk_t_base) rtol = 1.0e-12
+
+        # The boxcar default is unaffected: its gate pair is the sum of two masked
+        # beamlets at the same radius, which occupy disjoint k-space corners, so it
+        # carries exactly twice the test beam's energy.
+        stg = TS.build_setup(; base..., beam)
+        @test stg.combined_grid["geometry"] == "tg"
+        @test stg.energyfun_ω(stg.Eωk_g12) ≈
+            2 * stg.energyfun_ω(stg.Eωk_t_base) rtol = 1.0e-12
+
+        # Refusals: an unknown layout, and :sd on a beam model whose builder only
+        # ever places three beams (it would otherwise give a TG field silently).
+        @test_throws ArgumentError TS.build_setup(;
+            base..., beam, geometry = :boxcar
+        )
+        @test_throws ArgumentError TS.build_setup(;
+            base..., beam = TS.GaussianBeam(8.3e-6, 0.1), geometry = :sd
+        )
     end
 
     # -----------------------------------------------------------------------------

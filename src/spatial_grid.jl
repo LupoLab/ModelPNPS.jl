@@ -50,6 +50,9 @@ function optimal_spatial_grid(
         n_airy = 5, pts_per_lobe = 10, safety = 1.5, margin = 1.1,
         geometry::Symbol = :tg
     )
+    geometry in (:tg, :sd) || throw(
+        ArgumentError("geometry must be :tg or :sd; got :$geometry")
+    )
     # Outermost extent of the nonlinear k-content, measured in the mask plane.
     #
     # :tg  four-hole boxcar. Holes at (+-d, +-d) with d = spacing/2 + diam/2, so

@@ -188,10 +188,10 @@ end
 Construct the input beamlets at the substrate, in k-space. The geometry `geom` is
 a `NamedTuple(mask_diam, mask_spacing, f_foc, λ0, τfwhm, geometry)` shared by both
 beam models. `geom.geometry` is `:tg` for the three-beam boxcar layout
-`(g1, g2, t-base)`, or `:sd` for the two-beam self-diffraction layout, which is
-built by the `HE11Beam` method only and returns `nothing` in place of `Eωk_g2`
-(a zero array of that size is half a gigabyte of pure waste), putting the probe
-in `Eωk_g1` and the delayed gate in `Eωk_t_base`.
+`(g1, g2, t-base)`, or `:sd` for the two-beam self-diffraction layout — `HE11Beam`
+only, and rejected for any other beam by [`build_setup`](@ref) — which returns
+`nothing` in place of `Eωk_g2` (a zero array of that size is half a gigabyte of
+pure waste) and puts the probe in `Eωk_g1` and the delayed gate in `Eωk_t_base`.
 
 `ϕ` is accepted for a uniform interface across beam models and ignored by both:
 the spectral phase is already carried by the 1-D reference `Eω` that

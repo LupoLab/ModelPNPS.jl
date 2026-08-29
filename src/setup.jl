@@ -46,7 +46,9 @@ The defaults reproduce the master script
                                     signal sits one slot further out on the same
                                     axis. It selects both the beamlet layout and
                                     the k-space bound used by
-                                    [`optimal_spatial_grid`](@ref)
+                                    [`optimal_spatial_grid`](@ref). `:sd` is
+                                    implemented for `HE11Beam` only; any other
+                                    value throws an `ArgumentError`
 - `fftsize = :pow2`               — how the temporal sample count is rounded up:
                                     `:pow2` to the next power of two, `:smooth` to
                                     the next even 2,3,5-smooth size (a smaller grid
@@ -186,6 +188,23 @@ function build_setup(;
         optimal_grid_kwargs = (;),
         extra_grid_metadata = Dict{String, Any}()
     )
+    # --- Validate the beam layout ------------------------------------------
+    # Checked here rather than where it is consumed: `geometry` reaches two
+    # independent consumers (the grid sizing below and `build_beamlets`), each of
+    # which treats anything that is not `:sd` as `:tg`, so an unknown symbol would
+    # otherwise produce a TG run with no diagnostic at all.
+    geometry in (:tg, :sd) || throw(
+        ArgumentError("geometry must be :tg or :sd; got :$geometry")
+    )
+    # Only the HE₁₁ builder implements the self-diffraction layout; the Gaussian
+    # builder always places three beams at the boxcar corners, so an :sd request
+    # there would silently give a TG field on an SD-sized grid.
+    geometry === :tg || beam isa HE11Beam || throw(
+        ArgumentError(
+            "geometry = :sd is only supported with HE11Beam; got $(typeof(beam))"
+        )
+    )
+
     # --- Resolve spatial grid ----------------------------------------------
     if R === nothing || N === nothing
         f_foc = beam.f_foc
