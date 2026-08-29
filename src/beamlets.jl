@@ -143,7 +143,8 @@ end
 _abs_deviation_squared(value, mean_amplitude) = (abs(value) - mean_amplitude)^2
 
 """
-    _profile_meta(r, Eωr, asym, coef, holex, holey, zmask, rmax_units, which) -> Dict
+    _profile_meta(r, Eωr, asym, coef, rmax_req, holex, holey, zmask,
+                  rmax_units, which) -> Dict
 
 Package [`_beamlet_profile`](@ref)'s output for the output file. Complex data is split into
 two real datasets, matching the `Eω_beamlet_re`/`_im` convention (h5py reads HDF5.jl's
@@ -180,12 +181,23 @@ end
 
 """
     build_beamlets(beam, grid, xygrid, geom, Eω, energy, energyfun_ω;
-                   apod=:supergauss, apod_param=nothing)
+                   apod=:supergauss, apod_param=nothing, ϕ=nothing,
+                   profile=true, profile_nr=64, profile_rmax_units=6)
         -> (Eωk_g1, Eωk_g2, Eωk_t_base, Iω_beamlet, beam_metadata::Dict)
 
-Construct the three input beamlets `(g1, g2, t-base)` at the substrate, in
-k-space. The geometry `geom` is a `NamedTuple(mask_diam, mask_spacing,
-f_foc, λ0, τfwhm)` shared by both beam models.
+Construct the input beamlets at the substrate, in k-space. The geometry `geom` is
+a `NamedTuple(mask_diam, mask_spacing, f_foc, λ0, τfwhm, geometry)` shared by both
+beam models. `geom.geometry` is `:tg` for the three-beam boxcar layout
+`(g1, g2, t-base)`, or `:sd` for the two-beam self-diffraction layout, which is
+built by the `HE11Beam` method only and returns `nothing` in place of `Eωk_g2`
+(a zero array of that size is half a gigabyte of pure waste), putting the probe
+in `Eωk_g1` and the delayed gate in `Eωk_t_base`.
+
+`ϕ` is accepted for a uniform interface across beam models and ignored by both:
+the spectral phase is already carried by the 1-D reference `Eω` that
+[`build_setup`](@ref) passes in. `profile`, `profile_nr` and
+`profile_rmax_units` control the diagnostic radial focal profile added to
+`beam_metadata`; see [`_beamlet_profile`](@ref).
 
 For `HE11Beam`: builds the full HE₁₁ k-space field, rescales to the
 requested energy, then applies three apodised hole masks (g1, g2, t).

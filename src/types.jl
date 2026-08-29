@@ -13,6 +13,7 @@ abstract type AbstractInputBeam end
 
 """
     HE11Beam(a, f_coll, f_foc)
+    HE11Beam(; a, f_coll, f_foc)
 
 The HE₁₁ capillary mode imaged from the fibre output through a collimating
 lens (`f_coll`) onto a beam mask, then focused (`f_foc`) into the substrate.
@@ -42,6 +43,7 @@ a_scaled(b::HE11Beam) = b.a * b.f_foc / b.f_coll
 
 """
     GaussianBeam(w0, f_foc)
+    GaussianBeam(; w0, f_foc)
 
 A Gaussian beam with 1/e² intensity radius `w0` at the focus. `f_foc` is
 retained only so the crossing angle (and `Δk`) can be derived from the same
@@ -71,8 +73,9 @@ from the propagated field. Concrete subtypes: [`PhysicalMaskWindow`](@ref),
 abstract type AbstractSignalWindow end
 
 """
-    PhysicalMaskWindow(holex, holey, holediam, zmask;
-                       apod=:supergauss, apod_param=nothing)
+    PhysicalMaskWindow(holex, holey, holediam, zmask, apod, apod_param)
+    PhysicalMaskWindow(; holex, holey, holediam, zmask,
+                       apod = :supergauss, apod_param = nothing)
 
 A frequency-dependent mask hole: physical position `(holex, holey)` and
 diameter `holediam` in the mask plane, sitting `zmask` (= focal length)
@@ -114,6 +117,7 @@ PhysicalMaskWindow(;
 
 """
     PlanckWindow(kxc, kyc, kwidth, pad)
+    PlanckWindow(; kxc, kyc, kwidth, pad = 1.25)
 
 A radial Planck-taper window centred at `(kxc, kyc)` in k-space with flat
 half-width `kwidth` and an outer roll-off radius `pad·kwidth`. The window is
@@ -135,6 +139,7 @@ PlanckWindow(; kxc, kyc, kwidth, pad = 1.25) = PlanckWindow(kxc, kyc, kwidth, pa
 
 """
     PlanckOmegaWindow(xc, yc, holediam, f_foc, pad)
+    PlanckOmegaWindow(; xc, yc, holediam, f_foc, pad = 1.25)
 
 A frequency-*dependent* Planck-taper window. The hole is specified in the
 *mask plane* by its centre `(xc, yc)` and diameter `holediam`; at frequency

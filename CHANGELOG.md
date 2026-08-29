@@ -19,5 +19,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Replaced generic `ErrorException` failures with specific argument, dimension, and
   invariant exceptions.
 - Tightened setup field types so callable storage remains inferable.
+- Brought the hand-written docstring signature lines back in line with the code, and
+  documented the keywords they had drifted away from (`geometry`, `fftsize`,
+  `arraytype`, `beamlets_on_host`, and the `run_scan` and `simulate_delay_point`
+  solver keywords).
 
 [Unreleased]: https://github.com/jtravs/ModelPNPS.jl/compare/v1.0.0...HEAD

@@ -43,7 +43,7 @@ function _completed_scanidcs(scan_name::AbstractString)
 end
 
 """
-    run_scan(setup, τs; kwargs...) -> Nothing
+    run_scan(setup, τs; scan_name, exec, kwargs...) -> Nothing
 
 Build a `Luna.Scans.Scan` over the delay array `τs` and run
 [`simulate_delay_point`](@ref) at every τ, calling `Output.scansave` to
@@ -66,6 +66,38 @@ note that peak memory scales with the number of z points.
 
 `extra_outputs(output_namedtuple)` is an optional callable returning extra named tuples to
 splat into `scansave`. The default is empty.
+
+# Keywords
+
+- `scan_name`: base name of the collected file, `"<scan_name>_collected.h5"`.
+- `exec`: the `Luna.Scans.AbstractExec` instance described above.
+- `nz = 2`, `zsave = nz`: propagation snapshots, as above.
+- `init_dz = 5e-7`, `rtol = 1e-6`, `max_dz = 0.0`: solver settings forwarded to
+  [`simulate_delay_point`](@ref); `max_dz = 0.0` means `thickness/2`. They are
+  recorded in the file's `/grid` block as provenance.
+- `norm = Luna.RK45.weaknorm`: RK45 error norm.
+- `norm_builder = nothing`: a callable `setup -> norm`, used instead of `norm`, for a
+  norm that cannot exist before the setup does. Pass
+  `norm_builder = signal_quadrant_norm` to get [`signal_quadrant_norm`](@ref) built
+  lazily on the compute node.
+- `twin_period = 1`: accepted steps between applications of the spectral/temporal
+  windows. `1` applies them after every step, which makes the apodisation damping
+  scale with the step count; a large value applies them only at saves, which with
+  `step_on` sit at identical positions for any `rtol`.
+- `fftw_threads = 0`: FFTW threads per process, set where the plans are created so
+  that it reaches `procs` workers (a top-level `Luna.set_fftw_threads` does not).
+  With `procs` workers sharing `cpus` cores, pass `cpus ÷ procs`. `0` leaves it alone.
+- `fftw_mode = :estimate`: FFTW planning effort, set on the same path and for the same
+  reason. MEASURE-class planning of production-size 3-D transforms costs tens of
+  minutes per worker.
+- `stream = true`: write the propagation slices to a node-local temp file rather than
+  holding the whole `(ω, ky, kx, z)` stack in memory (~2.15 GB per slice at production
+  size). Ignored when save-time extraction is active, which stores no slices at all.
+- `extract_on_save = nothing`: reduce each slice as it is produced; see
+  [`simulate_delay_point`](@ref). `nothing` picks the per-device default.
+- `skip_existing = false`: resume an interrupted scan by skipping delay points already
+  present in the collected file. An all-zero slice is the "not yet computed" marker,
+  the same test [`verify_against_collected`](@ref) uses.
 """
 function run_scan(
         setup_fn, τs::AbstractVector;
@@ -217,7 +249,8 @@ end
 """
     verify_against_collected(setup_args, collected, scanidcs;
                              zsave, init_dz=5e-7, rtol=1e-6, max_dz=0.0,
-                             norm=Luna.RK45.weaknorm, stream=true)
+                             norm=Luna.RK45.weaknorm, twin_period=1,
+                             stream=true, extract_on_save=nothing)
         -> Vector{Dict}
 
 Recompute selected delay points of an existing scan and compare against the collected

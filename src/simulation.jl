@@ -3,17 +3,22 @@
 # ============================================================================
 
 """
-    extract_signal_spectra(Eωk_out, window_array, xygrid)
+    extract_signal_spectra(Eωk, window_array, xygrid)
         -> (Iω_integrated, Iω_reimaged)
 
-Apply a precomputed signal window to the output field of `Luna.run`
-(shape `(Nω, Nky, Nkx, Nz)`) and extract two spectral diagnostics:
+Apply a precomputed signal window to a propagated field and extract two
+spectral diagnostics:
 
-1. `Iω_integrated` — `|E|²` summed over all (ky, kx); shape `(Nω, Nz)`.
+1. `Iω_integrated` — `|E|²` summed over all (ky, kx).
    Models a spectrometer collecting **all** the signal light.
-2. `Iω_reimaged`   — `|E|²` at the centre pixel of the IFFT'd field;
-   shape `(Nω, Nz)`. Models a spectrometer fed only by the on-axis
-   re-collimated signal.
+2. `Iω_reimaged`   — `|E|²` at the centre pixel of the IFFT'd field.
+   Models a spectrometer fed only by the on-axis re-collimated signal.
+
+`Eωk` is either a single `(Nω, Nky, Nkx)` slice, for which both spectra are
+length-`Nω` vectors, or the `(Nω, Nky, Nkx, Nz)` stack `Luna.run` produces, for
+which both are `(Nω, Nz)`. The 4-D method loops over z and calls the 3-D one, so
+its peak extra memory is one windowed slice rather than a second copy of the
+whole stack (tens of GB at production size).
 
 `window_array` is broadcast over `ω` (if 2-D) or matched directly (if 3-D),
 and over the `Nz` z-slices in either case.
@@ -143,7 +148,7 @@ end
 # its own type.
 
 """
-    _signed_window(w, arraytype) -> array
+    _signed_window(w, arraytype, Nω) -> array
 
 The signal window with the re-imaging sign pattern `(-1)^((iky-1)+(ikx-1))` folded in,
 on `arraytype`.
@@ -398,6 +403,22 @@ function _resolve_zsave(zsave::AbstractVector, zmax::Real)
 end
 
 """
+Callable RK45 error norm built by [`signal_quadrant_norm`](@ref).
+
+Holds the signal-quadrant mask, the relative floor, and — on a device — a cached
+0/1 indicator of the quadrant on the solver's own array type.
+"""
+mutable struct SignalQuadrantNorm
+    sig_quad::BitMatrix
+    floor_rel::Float64
+    # 0/1 quadrant indicator of shape (1, Nky, Nkx) on the solver's array type, built on
+    # first use by the device path and cached. See `_sqn_devmask!`.
+    devmask::Any
+end
+
+SignalQuadrantNorm(sig_quad, floor_rel) = SignalQuadrantNorm(sig_quad, floor_rel, nothing)
+
+"""
     signal_quadrant_norm(setup::TGFROGSetup; floor_rel=1e-6)
 
 Region-relative RK45 error norm for weak-signal accuracy at moderate `rtol`.
@@ -427,16 +448,6 @@ their `norm` keyword. Validate a new `(rtol, floor_rel)` choice against a
 tight-`rtol` reference before production use (the pass criterion used here:
 every z-slice of `Iω_win` within 1e-3 relative of an `rtol = 1e-8` run).
 """
-mutable struct SignalQuadrantNorm
-    sig_quad::BitMatrix
-    floor_rel::Float64
-    # 0/1 quadrant indicator of shape (1, Nky, Nkx) on the solver's array type, built on
-    # first use by the device path and cached. See `_sqn_devmask!`.
-    devmask::Any
-end
-
-SignalQuadrantNorm(sig_quad, floor_rel) = SignalQuadrantNorm(sig_quad, floor_rel, nothing)
-
 function signal_quadrant_norm(setup::TGFROGSetup; floor_rel::Float64 = 1.0e-6)
     # Same quadrant the Iω_full collection integrates (see the comment there).
     sig_quad = (setup.xygrid.ky .< 0) .& (setup.xygrid.kx .< 0)'
@@ -694,9 +705,6 @@ function _match_arraytype(Eωk, transform)
     return Eωk
 end
 
-"""Delay phase angle ``-ωτ`` on the grid's frequency axis."""
-grid_delay_phase(grid::Grid.TimeGrid, τ::Real) = -grid.ω .* τ
-
 "Return the same array for every requested propagation slice."
 struct ConstantSlice{A}
     array::A
@@ -720,8 +728,9 @@ end
 
 """
     simulate_delay_point(setup::TGFROGSetup, τi;
-                         nz=2, init_dz=5e-7, rtol=1e-6, max_dz=0.0,
-                         filename=nothing,
+                         nz=2, zsave=nz, init_dz=5e-7, rtol=1e-6, max_dz=0.0,
+                         norm=Luna.RK45.weaknorm, twin_period=1,
+                         filename=nothing, extract_on_save=nothing,
                          skip_propagation=false)
         -> NamedTuple
 
@@ -754,6 +763,20 @@ collection / chromatic-vignetting efficiency of the signal aperture, so the
 trace can be corrected for collection vignetting exactly rather than via a
 power-law approximation. (This assumes the boxcar beams are well separated, so
 pump tails leaking into the signal quadrant are negligible vs. the signal.)
+
+The solver keywords go straight to `Luna.run`: `init_dz` [m] is the first step,
+`rtol` the RK45 relative tolerance, `max_dz` [m] the step ceiling (`0.0` means
+`zmax/2`), and `norm` the error norm — pass [`signal_quadrant_norm`](@ref) to
+control the weak signal's OWN relative error rather than the pump-dominated whole
+field's. `twin_period` is the number of accepted steps between applications of the
+spectral/temporal windows; the default `1` applies them on every step, and larger
+values change the result at the apodisation-leakage level.
+
+`extract_on_save` reduces each z-slice to its spectra as it is produced, so the
+field is never stored, streamed or transferred. It defaults to `true` for a device
+propagation, where the saved stack costs 14–18 % of the delay point in temp-file
+traffic, and to `false` on the host; the two routes are bit-identical, so passing
+`true` on the host is safe.
 
 Pass `filename` to persist the propagation to disk: the `Luna.run` then writes
 to an `Output.HDF5Output` at that path instead of an in-memory

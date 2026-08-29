@@ -4,16 +4,8 @@
 
 """
     build_setup(; λ0, τfwhm, energy, thickness, material,
-                  mask_diam, mask_spacing,
-                  beam, window,
-                  trange = 40e-15,
-                  λlims  = (160e-9, 500e-9),
-                  R      = nothing,
-                  N      = nothing,
-                  apod   = :supergauss,
-                  apod_param = nothing,
-                  optimal_grid_kwargs = (;),
-                  extra_grid_metadata = Dict{String,Any}()) -> TGFROGSetup
+                  mask_diam, mask_spacing, beam, window,
+                  kwargs...) -> TGFROGSetup
 
 Build the once-per-simulation setup: temporal/spatial grids, propagation
 operators, FFT plans, the three input beamlets and the signal window(s).
@@ -47,6 +39,19 @@ The defaults reproduce the master script
                                     via [`optimal_spatial_grid`](@ref)
 - `apod, apod_param`              — apodisation for the *input-beamlet*
                                     masks (only relevant for `HE11Beam`)
+- `geometry = :tg`                — beam layout. `:tg` is the four-hole boxcar
+                                    TG-FROG geometry (three inputs, signal in the
+                                    fourth corner); `:sd` places two collinear
+                                    holes for self-diffraction, whose `2k_E - k_G`
+                                    signal sits one slot further out on the same
+                                    axis. It selects both the beamlet layout and
+                                    the k-space bound used by
+                                    [`optimal_spatial_grid`](@ref)
+- `fftsize = :pow2`               — how the temporal sample count is rounded up:
+                                    `:pow2` to the next power of two, `:smooth` to
+                                    the next even 2,3,5-smooth size (a smaller grid
+                                    for the same resolution). Envelope mode only —
+                                    `Grid.RealGrid` has no such control
 - `GDD = 0.0`, `TOD = 0.0`        — group-delay and third-order dispersion
                                     [s², s³] applied to the input pulse
 - `input_pulse = nothing`         — an [`InputPulseData`](@ref): use this
@@ -135,6 +140,19 @@ The defaults reproduce the master script
                                     size); the window parameters (`window_def`)
                                     are always stored and reconstruct the
                                     array via [`build_window`](@ref)
+- `arraytype = Array`             — array type the propagation runs on. Pass
+                                    `:cuda` to build the beamlets, operators and
+                                    window on the GPU; it is resolved lazily, so a
+                                    scan script passes it inside `setup_args`
+                                    rather than as a [`run_scan`](@ref) keyword and
+                                    the GPU package is then loaded on the compute
+                                    node, never on the submitting host
+- `beamlets_on_host = false`      — on a device run, keep the pre-built beamlets in
+                                    host memory and upload the delayed sum once per
+                                    delay point — two fewer resident device fields
+                                    in exchange for one transfer per point. Use it
+                                    when the card is memory-bound; see
+                                    [`memory_budget`](@ref)
 - `optimal_grid_kwargs`           — extra kwargs forwarded to
                                     `optimal_spatial_grid`
 - `extra_grid_metadata`           — additional entries merged into the
@@ -168,7 +186,6 @@ function build_setup(;
         optimal_grid_kwargs = (;),
         extra_grid_metadata = Dict{String, Any}()
     )
-
     # --- Resolve spatial grid ----------------------------------------------
     if R === nothing || N === nothing
         f_foc = beam.f_foc

@@ -4,7 +4,8 @@
 
 """
     optimal_spatial_grid(f, mask_diam, mask_spacing, λmin, λmax;
-                         n_airy=5, pts_per_lobe=10, safety=1.5)
+                         n_airy=5, pts_per_lobe=10, safety=1.5,
+                         margin=1.1, geometry=:tg) -> (R, N)
 
 Return `(R, N)` for a Luna `FreeGrid(R, N)` chosen so that the spatial grid
 
@@ -38,6 +39,11 @@ information is printed via `@info`.
 - `margin=1.1`: multiplier on the resolved grid size before rounding up to the
   next even 2,3,5-smooth FFT size (guards the containment against grid
   quantisation).
+- `geometry=:tg`: the beam layout the k-space bound (3.) is computed for. `:tg`
+  is the four-hole boxcar, whose χ⁽³⁾ combinations reach three times the hole
+  offset; `:sd` is the two-hole self-diffraction layout, whose `2k₁ - k₂` signal
+  sits one further slot out along the same axis. See the comment on `x_max` in
+  the implementation for the two bounds.
 """
 function optimal_spatial_grid(
         f, mask_diam, mask_spacing, λmin, λmax;
