@@ -63,7 +63,7 @@ import Random: MersenneTwister, Xoshiro
         r_airy_min = 1.22 * λmin * f / mask_diam
         @test dx <= r_airy_min / 10 + 1.0e-12
 
-        # k-space containment: kmax ≥ safety·3·2π·x_max/(λmin·f), default safety=1.5.
+        # k-space containment requires `kmax ≥ safety·3·2π·x_max/(λmin·f)`.
         kmax = π * N / (2R)
         x_max = mask_spc / 2 + mask_diam
         k_NL_max = 1.5 * 3 * 2π * x_max / (λmin * f)
@@ -88,7 +88,10 @@ import Random: MersenneTwister, Xoshiro
 
         # 1-D reference spectrum (using a Luna GaussField).
         FT1d = FFTW.plan_fft(copy(grid.t))
-        Eω = Luna.Fields.GaussField(; λ0 = 260.0e-9, τfwhm = 2.0e-15, energy = 1.0e-9)(grid, FT1d)
+        field = Luna.Fields.GaussField(;
+            λ0 = 260.0e-9, τfwhm = 2.0e-15, energy = 1.0e-9
+        )
+        Eω = field(grid, FT1d)
 
         Eωk0 = TS.build_he11_kspace(grid, xygrid, beam, Eω)
         @test size(Eωk0) == (length(grid.ω), length(xygrid.ky), length(xygrid.kx))
@@ -371,9 +374,11 @@ import Random: MersenneTwister, Xoshiro
 
         # Validation failures.
         @test_throws ArgumentError TS._resolve_zsave([6.0e-6, 2.0e-6], 10.0e-6)   # unsorted
-        @test_throws ArgumentError TS._resolve_zsave([2.0e-6, 2.0e-6], 10.0e-6)   # duplicate
+        # Repeated positions are ambiguous save requests.
+        @test_throws ArgumentError TS._resolve_zsave([2.0e-6, 2.0e-6], 10.0e-6)
         @test_throws ArgumentError TS._resolve_zsave([20.0e-6], 10.0e-6)        # > zmax
-        @test_throws ArgumentError TS._resolve_zsave([-1.0e-6, 5.0e-6], 10.0e-6)  # negative z
+        # Propagation positions cannot precede the medium entrance.
+        @test_throws ArgumentError TS._resolve_zsave([-1.0e-6, 5.0e-6], 10.0e-6)
 
         # Idempotent: re-resolving an already-resolved grid (which the integer path
         # produces with an entrance slice at z=0) returns it unchanged. This is the
@@ -600,7 +605,9 @@ import Random: MersenneTwister, Xoshiro
         # Multi-z snapshots from ONE run: realized z lands exactly on the requested
         # grid and distinct z give distinct fields (dense-output interpolation, not
         # stacked copies). This is the core "free intermediate thicknesses" claim.
-        outz = TS.simulate_delay_point(setup, 0.0; zsave = [0.5e-6, 1.0e-6], init_dz = 5.0e-7)
+        outz = TS.simulate_delay_point(
+            setup, 0.0; zsave = [0.5e-6, 1.0e-6], init_dz = 5.0e-7
+        )
         @test outz.zsave ≈ [0.5e-6, 1.0e-6] atol = 1.0e-15
         @test size(outz.Iω_win) == (length(setup.grid.ω), 2)
         @test any(outz.Iω_win[:, 1] .!= outz.Iω_win[:, 2])
@@ -641,9 +648,10 @@ import Random: MersenneTwister, Xoshiro
             ω0 = 2π * 2.99792458e8 / 260.0e-9,
             dω = 1.0e13, dt = 1.0e-15
         )
-        # Build an FFT-ordered ω vector centred on 0: [0, dω, ..., (N/2-1)dω, -N/2 dω, ..., -dω]
+        # Build an FFT-ordered frequency vector centred on zero.
         halfN = Nω ÷ 2
-        ω_fft = [0:(halfN - 1); -halfN:-1] .* dω             # FFT-ordered (relative to ω0)
+        # Frequencies are relative to the carrier `ω0`.
+        ω_fft = [0:(halfN - 1); -halfN:-1] .* dω
         ω_abs = ω_fft .+ ω0                              # absolute frequency
         Iω_fft = abs2.(exp.(-(ω_fft ./ (5dω)) .^ 2))       # Gaussian centred at DC bin
         t = collect(((-Nt ÷ 2):(Nt ÷ 2 - 1))) .* dt
@@ -656,7 +664,8 @@ import Random: MersenneTwister, Xoshiro
 
         HDF5.h5open(path, "w") do f
             g = HDF5.create_group(f, "grid")
-            g["ω"] = ω_abs                # NB: scansave saves the *absolute* ω in FFT order
+            # `scansave` writes absolute frequencies in FFT order.
+            g["ω"] = ω_abs
             g["ω0"] = ω0
             g["t"] = t
             g["Iω"] = Iω_fft               # in same FFT order as ω
@@ -673,7 +682,8 @@ import Random: MersenneTwister, Xoshiro
             sv["τ"] = τ
             f["Iω_win"] = rand_arr
             f["Iω_win_reimaged"] = rand_arr .* 0.5
-            f["Iω_full"] = rand_arr .* 2.0           # full signal-collection reference (≥ windowed)
+            # The full collection reference contains at least the windowed signal.
+            f["Iω_full"] = rand_arr .* 2.0
             if with_omega_dep
                 f["Iω_win_ωdep"] = rand_arr .* 0.8
                 f["Iω_win_ωdep_reimaged"] = rand_arr .* 0.4
@@ -1100,7 +1110,8 @@ import Random: MersenneTwister, Xoshiro
             zmask = 0.1, apod = :supergauss, apod_param = 16
         )
         sa = (;
-            λ0 = 260.0e-9, τfwhm = 2.0e-15, energy = 0.2e-6, thickness = 1.0e-6, material = :SiO2,
+            λ0 = 260.0e-9, τfwhm = 2.0e-15, energy = 0.2e-6,
+            thickness = 1.0e-6, material = :SiO2,
             mask_diam = 1.0e-3, mask_spacing = 0.5e-3, beam, window,
             trange = 20.0e-15, λlims = (200.0e-9, 400.0e-9), R = 40.0e-6, N = 32,
         )
@@ -1219,10 +1230,13 @@ import Random: MersenneTwister, Xoshiro
         # a pure quadratic with coefficient -GDD/2. Restrict to samples that carry
         # signal and whose quadratic phase has not wrapped.
         Δω = grid.ω .- PhysData.wlfreq(λ0)
-        ok = (abs2.(E0) .> 1.0e-6 * maximum(abs2, E0)) .& (abs.(0.5 * GDD .* Δω .^ 2) .< 2.5)
+        significant = abs2.(E0) .> 1.0e-6 * maximum(abs2, E0)
+        unwrapped = abs.(0.5 * GDD .* Δω .^ 2) .< 2.5
+        ok = significant .& unwrapped
         @test count(ok) > 20
         dφ = angle.(E2[ok] ./ E0[ok])
-        c = sum(dφ .* Δω[ok] .^ 2) / sum(Δω[ok] .^ 4)   # LSQ quadratic through the origin
+        # Fit the least-squares quadratic through the origin.
+        c = sum(dφ .* Δω[ok] .^ 2) / sum(Δω[ok] .^ 4)
         @test isapprox(c, -GDD / 2; rtol = 1.0e-3)
         # ...and the residual really is quadratic, not merely quadratic-ish.
         @test maximum(abs.(dφ .- c .* Δω[ok] .^ 2)) < 1.0e-6
@@ -1231,12 +1245,16 @@ import Random: MersenneTwister, Xoshiro
         gm = gate1([0.0, 0.0, -GDD, 0.0])
         Em = gm[:, iy, ix]
         dφm = angle.(Em[ok] ./ E0[ok])
-        @test isapprox(sum(dφm .* Δω[ok] .^ 2) / sum(Δω[ok] .^ 4), +GDD / 2; rtol = 1.0e-3)
+        c_m = sum(dφm .* Δω[ok] .^ 2) / sum(Δω[ok] .^ 4)
+        @test isapprox(c_m, +GDD / 2; rtol = 1.0e-3)
 
         # The HE11 builder inherits the chirp through `Eω` and must NOT double it:
         # passing phi as well changes nothing there.
         beamh = TS.HE11Beam(125.0e-6, 5.0, 0.1)
-        Eωc = Luna.Fields.GaussField(; λ0, τfwhm, energy, ϕ = [0.0, 0.0, GDD, 0.0])(grid, FT1d)
+        chirped_field = Luna.Fields.GaussField(;
+            λ0, τfwhm, energy, ϕ = [0.0, 0.0, GDD, 0.0]
+        )
+        Eωc = chirped_field(grid, FT1d)
         h_noϕ = first(
             TS.build_beamlets(
                 beamh, grid, xygrid, geom, Eωc, energy,
@@ -1264,7 +1282,8 @@ import Random: MersenneTwister, Xoshiro
             apod = :supergauss, apod_param = 16
         )
         base = (;
-            λ0 = 260.0e-9, τfwhm = 2.0e-15, energy = 0.2e-6, thickness = 1.0e-6, material = :SiO2,
+            λ0 = 260.0e-9, τfwhm = 2.0e-15, energy = 0.2e-6,
+            thickness = 1.0e-6, material = :SiO2,
             mask_diam = 1.0e-3, mask_spacing = 0.5e-3, beam, window,
             trange = 20.0e-15, λlims = (200.0e-9, 400.0e-9), R = 40.0e-6, N = 32,
         )
@@ -1275,13 +1294,15 @@ import Random: MersenneTwister, Xoshiro
         @test se.grid isa Grid.EnvGrid
         @test sf.grid isa Grid.RealGrid
         @test sf.grid.ω[1] == 0                       # rfft half-spectrum starts at DC
-        @test issorted(sf.grid.ω)                     # ...and is monotonic, unlike an EnvGrid
+        # A real-grid frequency axis is monotonic, unlike an envelope-grid axis.
+        @test issorted(sf.grid.ω)
         @test !issorted(se.grid.ω)
         # every field-sized array follows the grid's ω axis
         @test size(sf.Eωk_g12, 1) == length(sf.grid.ω)
         @test size(sf.window_array, 1) == length(sf.grid.ω)
         @test length(sf.Eω) == length(sf.grid.ω)
-        @test sf.Eω isa Vector{ComplexF64}            # an rfft output is complex either way
+        # An `rfft` output remains complex-valued.
+        @test sf.Eω isa Vector{ComplexF64}
 
         # --- metadata contract ---
         @test se.combined_grid["field_mode"] == 0
@@ -1299,15 +1320,17 @@ import Random: MersenneTwister, Xoshiro
         @test se.combined_grid["ω0"] ≈ 2π * PhysData.c / 260.0e-9
 
         # --- the pulse is the same pulse in either representation ---
-        # Luna builds √I·cos(ω₀t) on a real grid and √I·exp(iΔωt) on an envelope grid, so the
-        # ENVELOPE intensity |A|² agrees; that is what the metadata stores in both modes.
-        @test maximum(sf.combined_grid["It"]) ≈ maximum(se.combined_grid["It"]) rtol = 1.0e-4
+        # Luna builds `√I cos(ω₀t)` on a real grid and `√I exp(iΔωt)` on an envelope
+        # grid, so the envelope intensity `|A|²` agrees in both metadata records.
+        @test maximum(sf.combined_grid["It"]) ≈
+            maximum(se.combined_grid["It"]) rtol = 1.0e-4
         @test Luna.Maths.fwhm(sf.grid.t, sf.combined_grid["It"]) ≈
             Luna.Maths.fwhm(se.grid.t, se.combined_grid["It"]) rtol = 1.0e-2
         @test length(sf.combined_grid["It"]) == length(sf.grid.t)
         @test length(sf.combined_grid["Ito"]) == length(sf.combined_grid["To"])
         # ...and so does the energy actually put into each beamlet
-        @test sf.energyfun_ω(sf.Eωk_t_base) ≈ se.energyfun_ω(se.Eωk_t_base) rtol = 1.0e-3
+        @test sf.energyfun_ω(sf.Eωk_t_base) ≈
+            se.energyfun_ω(se.Eωk_t_base) rtol = 1.0e-3
         @test sf.energyfun_ω(sf.Eωk_g12) ≈ se.energyfun_ω(se.Eωk_g12) rtol = 1.0e-3
 
         # --- ffac ---
@@ -1317,18 +1340,23 @@ import Random: MersenneTwister, Xoshiro
         @test s4.combined_grid["ffac"] == 4.0
 
         # --- refusals ---
-        @test_throws ArgumentError TS.build_setup(; base..., field_mode = true, raman = true)
-        @test_throws ArgumentError TS.build_setup(; base..., field_mode = true, response = :bogus)
+        @test_throws ArgumentError TS.build_setup(;
+            base..., field_mode = true, raman = true
+        )
+        @test_throws ArgumentError TS.build_setup(;
+            base..., field_mode = true, response = :bogus
+        )
         # the envelope path is unaffected by the new keywords
         @test_throws ArgumentError TS.build_setup(; base..., field_mode = true, ffac = 1)
     end
 
     @testset "field mode: :nothg and :thg agree when 3ω is outside the window" begin
-        # Algebraically, the fundamental-band content of E³ is exactly (3/4)Re(|E_a|²E_a) =
-        # (3/4)|E_a|²E. So on a window that excludes the third harmonic entirely — here
+        # Algebraically, the fundamental-band content of `E³` is exactly
+        # `(3/4)Re(|E_a|²E_a) = (3/4)|E_a|²E`.
+        # On a window that excludes the third harmonic entirely, here
         # 200-400 nm with a 260 nm carrier, whose 3ω band starts near 87 nm — the two
         # responses are the same operator and the propagations must agree to rounding.
-        # Where the bands DO overlap (a 1 fs pulse on the production window) they differ, and
+        # Where the bands overlap, for a 1 fs pulse on the production window, they differ;
         # that difference is the physics the field mode exists to measure.
         beam = TS.HE11Beam(125.0e-6, 5.0, 0.1)
         window = TS.PhysicalMaskWindow(
@@ -1337,13 +1365,17 @@ import Random: MersenneTwister, Xoshiro
             apod = :supergauss, apod_param = 16
         )
         base = (;
-            λ0 = 260.0e-9, τfwhm = 2.0e-15, energy = 0.2e-6, thickness = 2.0e-6, material = :SiO2,
+            λ0 = 260.0e-9, τfwhm = 2.0e-15, energy = 0.2e-6,
+            thickness = 2.0e-6, material = :SiO2,
             mask_diam = 1.0e-3, mask_spacing = 0.5e-3, beam, window,
-            trange = 20.0e-15, λlims = (200.0e-9, 400.0e-9), R = 40.0e-6, N = 32, field_mode = true,
+            trange = 20.0e-15, λlims = (200.0e-9, 400.0e-9),
+            R = 40.0e-6, N = 32, field_mode = true,
         )
         args = (; zsave = 2, init_dz = 5.0e-7, rtol = 1.0e-10, twin_period = 1_000_000_000)
-        on = TS.simulate_delay_point(TS.build_setup(; base..., response = :nothg), 0.0; args...)
-        ot = TS.simulate_delay_point(TS.build_setup(; base..., response = :thg), 0.0; args...)
+        setup_nothg = TS.build_setup(; base..., response = :nothg)
+        setup_thg = TS.build_setup(; base..., response = :thg)
+        on = TS.simulate_delay_point(setup_nothg, 0.0; args...)
+        ot = TS.simulate_delay_point(setup_thg, 0.0; args...)
         for k in (:Iω_win, :Iω_win_reimaged, :Iω_full)
             a, b = getfield(on, k), getfield(ot, k)
             @test maximum(abs, a .- b) / maximum(a) < 1.0e-8
@@ -1352,20 +1384,19 @@ import Random: MersenneTwister, Xoshiro
 
     @testset "field mode: field-versus-envelope trace agreement" begin
         # The port check, scaled down: the same geometry run both ways must give the same
-        # trace. The two grids have different ω axes and different bin normalisations, so the
-        # comparison is between PHYSICAL spectral densities on the common band — |E|² divided
-        # by Δω² (the ω part of `Fields.energyfuncs`' prefactor; the transverse part is common
+        # trace. The two grids have different frequency axes and bin normalisations, so the
+        # comparison uses physical spectral densities on the common band: `|E|²/Δω²`.
+        # This is the frequency part of `Fields.energyfuncs`; the transverse part is common
         # to both and cancels), splined onto one axis.
         #
-        # Measured on this configuration (2 fs, 143-600 nm, 5 µm of silica): 3.2e-4 of trace
-        # peak, FLAT in depth (3.19, 3.19, 3.22, 3.37 e-4 at 0.5, 1, 2, 5 µm) and unchanged to
-        # three digits when the pulse energy is dropped by a factor of 100. Depth-independent
+        # This configuration gives 3.2e-4 of trace peak, flat in depth, and unchanged to
+        # three digits when pulse energy drops by a factor of 100. Depth-independent
         # and energy-independent means it is grid bookkeeping and spline interpolation, not
         # nonlinear physics — which is what "the port is wired correctly" looks like. The
         # interpolation part is confirmed by it GROWING for longer pulses (6.4e-4 at 4 fs,
         # 1.6e-3 at 8 fs), whose narrower spectra are sampled by fewer points.
         #
-        # It is much larger (1.3e-2) on a 200-400 nm window, because there the envelope grid's
+        # It is much larger on a 200-400 nm window, because the envelope grid's
         # relative-frequency window clips a 2 fs 260 nm spectrum. That is a property of the
         # toy window, not of the port, and it is exactly the kind of thing the field mode
         # exists to expose.
@@ -1376,7 +1407,8 @@ import Random: MersenneTwister, Xoshiro
             apod = :supergauss, apod_param = 16
         )
         base = (;
-            λ0 = 260.0e-9, τfwhm = 2.0e-15, energy = 0.2e-6, thickness = 5.0e-6, material = :SiO2,
+            λ0 = 260.0e-9, τfwhm = 2.0e-15, energy = 0.2e-6,
+            thickness = 5.0e-6, material = :SiO2,
             mask_diam = 1.0e-3, mask_spacing = 0.5e-3, beam, window,
             trange = 120.0e-15, λlims = (143.0e-9, 600.0e-9), R = 40.0e-6, N = 32,
         )
@@ -1412,16 +1444,16 @@ import Random: MersenneTwister, Xoshiro
             m = A .> 1.0e-3 * maximum(A)
             sqrt(sum(abs2, (A .- B)[m]) / sum(abs2, A[m]))
         end
-        @test all(r -> r < 2.0e-3, rs)
+        @test all(<(2.0e-3), rs)
         # ...and, the point of reporting it per depth: it must not GROW with propagation.
         @test last(rs) < 2 * first(rs)
     end
 
     @testset "beamlet focal profile" begin
-        # The stored truth `Eω_beamlet` is a hybrid — spatially INTEGRATED amplitude with the
-        # 1-D input phase — and neither half necessarily describes what drives the signal, a
-        # three-field product weighted towards the intense centre of the spot. This diagnostic
-        # stores the beamlet's actual spatially resolved focal field so the effective pulse can
+        # The stored truth `Eω_beamlet` is a hybrid: spatially integrated amplitude with
+        # the one-dimensional input phase. Neither half necessarily describes the
+        # three-field product driving the signal. This diagnostic stores the beamlet's
+        # spatially resolved focal field so that the effective pulse can
         # be computed instead of assumed.
         beam = TS.HE11Beam(125.0e-6, 5.0, 0.1)
         win = TS.PhysicalMaskWindow(
@@ -1431,7 +1463,8 @@ import Random: MersenneTwister, Xoshiro
         # The production geometry, at reduced N and a short trange: mask_diam and R must be
         # physically consistent or the profile is of a spot that does not fit its own grid.
         base = (;
-            λ0 = 260.0e-9, τfwhm = 1.0e-15, energy = 0.1e-6, thickness = 1.0e-6, material = :SiO2,
+            λ0 = 260.0e-9, τfwhm = 1.0e-15, energy = 0.1e-6,
+            thickness = 1.0e-6, material = :SiO2,
             mask_diam = 1.0e-3, mask_spacing = 1.0e-3, beam, window = win,
             apod = :supergauss, apod_param = 16, trange = 40.0e-15,
             λlims = (143.0e-9, 600.0e-9), R = 366.0e-6, N = 192, store_window = false,
@@ -1455,11 +1488,17 @@ import Random: MersenneTwister, Xoshiro
 
         # --- 1. radial closure -------------------------------------------------------
         # Known a priori: integrating |E(ω,r)|² with the r dr Jacobian must reproduce the
-        # stored Iω_beamlet. If it does not, the centre, the Jacobian or the normalisation is
+        # stored `Iω_beamlet`. A mismatch identifies the centre, Jacobian, or normalisation
         # wrong — which is exactly how this went wrong once already (interpolating the raw
         # field, ~6 cycles of geometric tilt across the sampling radius, cost 20 % here).
         δx = xy.x[2] - xy.x[1]; δy = xy.y[2] - xy.y[1]
-        trapz(y, x) = sum((y[i] + y[i + 1]) / 2 * (x[i + 1] - x[i]) for i in 1:(length(x) - 1))
+        function trapz(y, x)
+            total = zero(eltype(y))
+            for i in firstindex(y):(lastindex(y) - 1)
+                total += (y[i] + y[i + 1]) / 2 * (x[i + 1] - x[i])
+            end
+            return total
+        end
         Iωb = cg["Iω_beamlet"]
         for λ in (200.0e-9, 260.0e-9, 350.0e-9)
             iω = argmin(abs.(g.ω .- 2π * PhysData.c / λ))
@@ -1470,7 +1509,7 @@ import Random: MersenneTwister, Xoshiro
         end
 
         # --- 2. the width scales as λ ------------------------------------------------
-        # The entire physical point: the focal spot AREA goes as λ², so the on-axis spectrum
+        # The focal-spot area scales as `λ²`, so the on-axis spectrum
         # is bluer than the integrated one. If this scaling is absent the profile is not
         # describing an aperture-diffraction pattern and nothing downstream is meaningful.
         fwhm_of(iω) = (
@@ -1500,7 +1539,8 @@ import Random: MersenneTwister, Xoshiro
 
         # --- 5. DIAGNOSTIC ONLY: the propagation cannot see it -----------------------
         args = (; zsave = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
-        on = TS.simulate_delay_point(TS.build_setup(; base..., thickness = 1.0e-6), 0.5e-15; args...)
+        setup_on = TS.build_setup(; base..., thickness = 1.0e-6)
+        on = TS.simulate_delay_point(setup_on, 0.5e-15; args...)
         off = TS.simulate_delay_point(soff, 0.5e-15; args...)
         for k in (:Iω_win, :Iω_win_reimaged, :Iω_full)
             @test isequal(getfield(on, k), getfield(off, k))   # bit-identical, not approx
@@ -1520,10 +1560,10 @@ import Random: MersenneTwister, Xoshiro
     end
 
     @testset "memory_budget matches what is actually allocated" begin
-        # `memory_budget` is what the GPU driver and benchmark scripts use to decide whether a
+        # `memory_budget` tells the GPU drivers and benchmarks whether a
         # shape fits the card, and being wrong there costs an hour of rented GPU and a dead
         # process. So check the arithmetic against the buffers a real setup holds, in every
-        # combination whose buffer SET differs: the envelope fast path, and the field general
+        # combination whose buffer set differs: the envelope fast path and field general
         # path with a pointwise response, a batched one, and no oversampling.
         beam = TS.HE11Beam(125.0e-6, 5.0, 0.1)
         window = TS.PhysicalMaskWindow(
@@ -1532,7 +1572,8 @@ import Random: MersenneTwister, Xoshiro
         )
         N = 24
         base = (;
-            λ0 = 260.0e-9, τfwhm = 1.0e-15, energy = 0.1e-6, thickness = 4.0e-6, material = :SiO2,
+            λ0 = 260.0e-9, τfwhm = 1.0e-15, energy = 0.1e-6,
+            thickness = 4.0e-6, material = :SiO2,
             mask_diam = 1.0e-3, mask_spacing = 1.0e-3, beam, window,
             apod = :supergauss, apod_param = 16, trange = 110.0e-15,
             λlims = (143.0e-9, 600.0e-9), R = 366.0e-6, N = N, store_window = false,
@@ -1547,7 +1588,7 @@ import Random: MersenneTwister, Xoshiro
             args = (; base..., kw...)
             b = TS.memory_budget(args)
             s = TS.build_setup(; args...)
-            # The no-THG response allocates its analytic-signal buffer on its FIRST CALL, not
+            # The no-THG response allocates its analytic-signal buffer on its first call,
             # at setup — a card can look fine after build_setup and still die on the first
             # step. Propagate once so the count includes it; that is what the budget claims.
             TS.simulate_delay_point(s, 0.0; zsave = 2, init_dz = 2.0e-6, rtol = 1.0e-4)
@@ -1571,8 +1612,8 @@ import Random: MersenneTwister, Xoshiro
             @test b.input ≈ 3 * Nω * N * N * 16 / 2^30
             @test (b.device - b.input) * 2^30 ≈ actual
             # ...and the structural facts the arithmetic rests on. The two paths encode "the
-            # polarisation needs no buffer of its own" differently — the fast path leaves it
-            # `nothing`, the general path aliases it to the field — so ask the question, not
+            # polarisation needs no buffer of its own" differently. The fast path leaves it
+            # `nothing`, while the general path aliases it to the field, so test the
             # one of its two spellings.
             @test (isnothing(t.Pωo) ? isnothing(t.Eωo) : t.Pωo === t.Eωo)
             @test (isnothing(t.Pto) || t.Pto === t.Eto) == (b.pto == 0)
@@ -1581,8 +1622,8 @@ import Random: MersenneTwister, Xoshiro
     end
 
     @testset "field mode: run_scan / load_simulated_scan round trip" begin
-        # The whole file contract end to end. A field-mode file's /grid/ω is a monotonic rfft
-        # half-spectrum with no ω0 field on the grid struct, so this is where a metadata slip
+        # The whole file contract end to end. A field-mode file's `/grid/ω` is a monotonic
+        # `rfft` half-spectrum with no `ω0` field on the grid, so a metadata slip here
         # would show up as a silently scrambled trace rather than an error.
         beam = TS.HE11Beam(125.0e-6, 5.0, 0.1)
         window = TS.PhysicalMaskWindow(
@@ -1600,7 +1641,8 @@ import Random: MersenneTwister, Xoshiro
             cd(tmpdir) do
                 TS.run_scan(
                     setup_args, [-1.0e-15, 1.0e-15]; scan_name = "fieldselftest",
-                    exec = Luna.Scans.LocalExec(), zsave = 2, init_dz = 5.0e-7, rtol = 1.0e-6
+                    exec = Luna.Scans.LocalExec(), zsave = 2,
+                    init_dz = 5.0e-7, rtol = 1.0e-6
                 )
                 collected = "fieldselftest_collected.h5"
                 @test isfile(collected)
@@ -1632,7 +1674,7 @@ import Random: MersenneTwister, Xoshiro
 
     @testset "field mode: load_simulated_scan does not fftshift a monotonic axis" begin
         # A field-mode /grid/ω is already ascending; shifting it would scramble the trace
-        # against its own axis. Files with no marker are envelope files and must shift, which
+        # against its own axis. Files without a marker are envelope files and must shift;
         # is what every file written before field mode existed relies on.
         function writefile(fn, field_mode)
             Nω, nz, Nτ = 8, 1, 3

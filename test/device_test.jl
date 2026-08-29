@@ -89,7 +89,9 @@ end
             sz::NTuple{N, Int}
             dims::Any
             pinv::AbstractFFTs.ScaledPlan
-            JLPlanInplace{T, N, P}(hp, sz, dims) where {T, N, P} = new{T, N, P}(hp, sz, dims)
+            function JLPlanInplace{T, N, P}(hp, sz, dims) where {T, N, P}
+                return new{T, N, P}(hp, sz, dims)
+            end
         end
         JLPlanInplace(hp, sz::NTuple{N, Int}, dims) where {N} =
             JLPlanInplace{ComplexF64, N, typeof(hp)}(hp, sz, dims)
@@ -132,14 +134,16 @@ end
             @test sd.Eω isa Vector{ComplexF64}
 
             # beamlets_on_host trades two resident device fields for one upload per point
-            sb = TS.build_setup(; base_kwargs..., arraytype = JLArray, beamlets_on_host = true)
+            sb = TS.build_setup(;
+                base_kwargs..., arraytype = JLArray, beamlets_on_host = true
+            )
             @test Utils.backend(sb.Eωk_g12) isa Utils.CPUBackend
             @test Utils.backend(sb.transform.Eto) isa Utils.DeviceBackend
 
             # The delay phase must live wherever the beamlets do: `delayed_input` combines
             # them in one broadcast, and CUDA rejects a broadcast mixing host and device
             # operands. JLArrays does NOT — it is CPU-backed, so such a broadcast simply
-            # works — which is why this is asserted structurally rather than by running it.
+            # works, which is why this is asserted structurally rather than by running it.
             wrapper(x) = Base.typename(typeof(x)).wrapper
             for s in (sh, sd, sb)
                 @test wrapper(s.ωd) === wrapper(s.Eωk_g12)
@@ -153,8 +157,12 @@ end
             end
 
             # ...and beamlets_on_host must give the same delay point, not merely run
-            ob = TS.simulate_delay_point(sb, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
-            oh = TS.simulate_delay_point(sh, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
+            ob = TS.simulate_delay_point(
+                sb, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+            )
+            oh = TS.simulate_delay_point(
+                sh, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+            )
             @test isapprox(ob.Iω_win, oh.Iω_win; rtol = 1.0e-8)
             # and agree with the host version
             @test isapprox(
@@ -234,14 +242,18 @@ end
             # NB rtol=1e-6, not the production 1e-8. On a grid this small the signal
             # quadrant holds numerical noise rather than a real FWM signal, and at 1e-8 the
             # default floor_rel=1e-6 lets the norm chase that noise's relative error until
-            # the stepper gives up — on the HOST as well as on a device. That is a property
+            # the stepper gives up, on the host as well as on a device. That is a property
             # of the tolerance/floor pair on a toy grid, not of the device path.
             sh = TS.build_setup(; base_kwargs...)
             sd = TS.build_setup(; base_kwargs..., arraytype = JLArray)
             qh = TS.signal_quadrant_norm(sh)
             qd = TS.signal_quadrant_norm(sd)
-            oh = TS.simulate_delay_point(sh, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-6, norm = qh)
-            od = TS.simulate_delay_point(sd, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-6, norm = qd)
+            oh = TS.simulate_delay_point(
+                sh, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-6, norm = qh
+            )
+            od = TS.simulate_delay_point(
+                sd, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-6, norm = qd
+            )
             @test isapprox(od.Iω_win, oh.Iω_win; rtol = 1.0e-8)
             @test all(isfinite, od.Iω_win)
         end
@@ -287,7 +299,8 @@ end
             # Folding the sign into the window is what lets ONE array serve both windowed
             # reductions; squaring it must give back the unsigned window.
             w = sd.window_array
-            @test Array(o.wsgn[1]) .^ 2 ≈ (ndims(w) == 3 ? w : reshape(w, 1, size(w)...)) .^ 2
+            expected_window = ndims(w) == 3 ? w : reshape(w, 1, size(w, 1), size(w, 2))
+            @test Array(o.wsgn[1]) .^ 2 ≈ expected_window .^ 2
         end
 
         @testset "save-time extraction with several windows" begin
@@ -306,7 +319,9 @@ end
             mw = merge(base_kwargs, (; window = wins))
             sh = TS.build_setup(; mw...)
             zv = [0.0, 1.0e-6]
-            a = TS.simulate_delay_point(sh, 0.3e-15; zsave = zv, init_dz = 5.0e-7, rtol = 1.0e-8)
+            a = TS.simulate_delay_point(
+                sh, 0.3e-15; zsave = zv, init_dz = 5.0e-7, rtol = 1.0e-8
+            )
             b = TS.simulate_delay_point(
                 sh, 0.3e-15; zsave = zv, init_dz = 5.0e-7, rtol = 1.0e-8,
                 extract_on_save = true
@@ -351,32 +366,39 @@ end
             # Field mode is the reason the device path had to grow at all: a RealGrid always
             # takes TransFree's GENERAL path (the inverse of a real-to-complex plan destroys
             # its input, which on the fast path would be the solver's state), and that path
-            # was host-only and serial. Both responses are covered — :thg is pointwise, :nothg
-            # is batched, and they take different branches through the transform.
+            # was host-only and serial. Both responses are covered: `:thg` is pointwise,
+            # `:nothg` is batched, and they take different transform branches.
             for response in (:nothg, :thg)
                 kw = (; base_kwargs..., field_mode = true, response)
                 sh = TS.build_setup(; kw...)
                 sd = TS.build_setup(; kw..., arraytype = JLArray)
                 @test sd.grid isa Grid.RealGrid
                 @test Utils.backend(sd.transform.Eto) isa Utils.DeviceBackend
-                @test eltype(sd.transform.Eto) === Float64        # a real time-domain buffer
+                # A field-resolved inverse transform uses a real time-domain buffer.
+                @test eltype(sd.transform.Eto) === Float64
                 @test Utils.backend(sd.Eωk_g12) isa Utils.DeviceBackend
                 @test sd.Eω isa Vector{ComplexF64}                # rfft output, host-built
-                outh = TS.simulate_delay_point(sh, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
-                outd = TS.simulate_delay_point(sd, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
+                outh = TS.simulate_delay_point(
+                    sh, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+                )
+                outd = TS.simulate_delay_point(
+                    sd, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+                )
                 for k in (:Iω_win, :Iω_win_reimaged, :Iω_full)
                     @test isapprox(getfield(outd, k), getfield(outh, k); rtol = 1.0e-8)
                     @test getfield(outd, k) isa Array
                 end
             end
 
-            # beamlets_on_host is the memory lever that matters most in field mode: those two
-            # fields are 9 GiB at production shape, on a card the field grid already fills.
+            # `beamlets_on_host` is the memory lever that matters most in field mode. Those
+            # two fields are 9 GiB at production shape, where the field grid fills the card.
             kw = (; base_kwargs..., field_mode = true)
             sb = TS.build_setup(; kw..., arraytype = JLArray, beamlets_on_host = true)
             @test Utils.backend(sb.Eωk_g12) isa Utils.CPUBackend
             @test Utils.backend(sb.transform.Eto) isa Utils.DeviceBackend
-            ob = TS.simulate_delay_point(sb, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
+            ob = TS.simulate_delay_point(
+                sb, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+            )
             oh = TS.simulate_delay_point(
                 TS.build_setup(; kw...), 0.5e-15;
                 nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
@@ -389,8 +411,12 @@ end
             s4d = TS.build_setup(; kw..., ffac = 4, arraytype = JLArray)
             @test length(s4d.grid.to) == length(s4d.grid.t)
             @test isapprox(
-                TS.simulate_delay_point(s4d, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8).Iω_win,
-                TS.simulate_delay_point(s4h, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8).Iω_win;
+                TS.simulate_delay_point(
+                    s4d, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+                ).Iω_win,
+                TS.simulate_delay_point(
+                    s4h, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+                ).Iω_win;
                 rtol = 1.0e-8
             )
         end
@@ -436,10 +462,18 @@ end
 
                 sh = TS.build_setup(; kw...)
                 for raman in (false, true)
-                    sh_r = raman ? TS.build_setup(; kw..., raman = true) : sh
-                    sd_r = raman ? TS.build_setup(; kw..., raman = true, arraytype = :cuda) : sd
-                    oh = TS.simulate_delay_point(sh_r, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
-                    od = TS.simulate_delay_point(sd_r, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
+                    sh_r = sh
+                    sd_r = sd
+                    if raman
+                        sh_r = TS.build_setup(; kw..., raman = true)
+                        sd_r = TS.build_setup(; kw..., raman = true, arraytype = :cuda)
+                    end
+                    oh = TS.simulate_delay_point(
+                        sh_r, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+                    )
+                    od = TS.simulate_delay_point(
+                        sd_r, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+                    )
                     rel = maximum(abs.(od.Iω_win .- oh.Iω_win)) / maximum(abs, oh.Iω_win)
                     @info "ModelPNPS CUDA vs host" raman rel_Iω_win = rel
                     @test rel < 1.0e-8
@@ -452,23 +486,33 @@ end
                 qn = TS.signal_quadrant_norm(sd)
                 qh2 = TS.signal_quadrant_norm(sh)
                 @test TS.Luna.RK45.fused_errnorm(qn) !== nothing
-                oq = TS.simulate_delay_point(sd, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-6, norm = qn)
-                oqh = TS.simulate_delay_point(sh, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-6, norm = qh2)
+                oq = TS.simulate_delay_point(
+                    sd, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-6, norm = qn
+                )
+                oqh = TS.simulate_delay_point(
+                    sh, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-6, norm = qh2
+                )
                 @test all(isfinite, oq.Iω_win)
                 @test isapprox(oq.Iω_win, oqh.Iω_win; rtol = 1.0e-8)
 
                 # beamlets_on_host is the memory lever for the largest campaigns; check it
                 # produces the same answer, not just that it runs
-                sb = TS.build_setup(; kw..., arraytype = :cuda, beamlets_on_host = true)
-                ob = TS.simulate_delay_point(sb, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
-                oh0 = TS.simulate_delay_point(sh, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
+                sb = TS.build_setup(;
+                    kw..., arraytype = :cuda, beamlets_on_host = true
+                )
+                ob = TS.simulate_delay_point(
+                    sb, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+                )
+                oh0 = TS.simulate_delay_point(
+                    sh, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+                )
                 @test isapprox(ob.Iω_win, oh0.Iω_win; rtol = 1.0e-8)
 
                 # --- FIELD MODE on real hardware ---------------------------------------
                 # The JLArray tests above cover the LOGIC of this path, but JLArrays
                 # interprets kernels on the host: it cannot catch CUDA code generation, and
                 # its c2r shim transforms out of place, so it would tolerate an aliasing
-                # mistake cuFFT will not. A RealGrid run is exactly where that matters — it
+                # mistake cuFFT will not. A `RealGrid` run is exactly where that matters:
                 # always takes TransFree's general path, whose inverse transform is c2r.
                 # Both responses, because they take different branches: :thg is pointwise
                 # (the polarisation overwrites the field buffer), :nothg is batched and
@@ -476,13 +520,20 @@ end
                 for response in (:nothg, :thg)
                     fkw = (; kw..., field_mode = true, response)
                     fh = TS.build_setup(; fkw...)
-                    fd = TS.build_setup(; fkw..., arraytype = :cuda, beamlets_on_host = true)
+                    fd = TS.build_setup(;
+                        fkw..., arraytype = :cuda, beamlets_on_host = true
+                    )
                     @test fd.grid isa Grid.RealGrid
                     @test Utils.backend(fd.transform.Eto) isa Utils.DeviceBackend
                     @test eltype(fd.transform.Eto) === Float64   # real time-domain buffers
-                    ofh = TS.simulate_delay_point(fh, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
-                    ofd = TS.simulate_delay_point(fd, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
-                    rel = maximum(abs.(ofd.Iω_win .- ofh.Iω_win)) / maximum(abs, ofh.Iω_win)
+                    ofh = TS.simulate_delay_point(
+                        fh, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+                    )
+                    ofd = TS.simulate_delay_point(
+                        fd, 0.5e-15; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+                    )
+                    rel = maximum(abs.(ofd.Iω_win .- ofh.Iω_win)) /
+                        maximum(abs, ofh.Iω_win)
                     @info "ModelPNPS CUDA vs host (field mode)" response rel_Iω_win = rel
                     @test rel < 1.0e-8
                     @test ofd.Iω_win isa Array
@@ -494,10 +545,16 @@ end
                 # ffac = 4 removes the oversampling, which changes which buffers exist at
                 # all (no Et_win, and Eto doubles as the window scratch).
                 f4h = TS.build_setup(; kw..., field_mode = true, ffac = 4)
-                f4d = TS.build_setup(; kw..., field_mode = true, ffac = 4, arraytype = :cuda)
+                f4d = TS.build_setup(;
+                    kw..., field_mode = true, ffac = 4, arraytype = :cuda
+                )
                 @test length(f4d.grid.to) == length(f4d.grid.t)
-                o4h = TS.simulate_delay_point(f4h, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
-                o4d = TS.simulate_delay_point(f4d, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
+                o4h = TS.simulate_delay_point(
+                    f4h, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+                )
+                o4d = TS.simulate_delay_point(
+                    f4d, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+                )
                 @test isapprox(o4d.Iω_win, o4h.Iω_win; rtol = 1.0e-8)
 
                 # The budget the driver and benchmark scripts refuse a shape on must match
@@ -506,12 +563,18 @@ end
                     Luna.device_reclaim()
                     free0 = Luna.device_memory_status()[1]
                     fs = TS.build_setup(; kw..., field_mode = true, arraytype = :cuda)
-                    TS.simulate_delay_point(fs, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8)
+                    TS.simulate_delay_point(
+                        fs, 0.0; nz = 2, init_dz = 5.0e-7, rtol = 1.0e-8
+                    )
                     used = (free0 - Luna.device_memory_status()[1]) / 2^30
-                    @info "field-mode device memory" predicted_GiB = b.device measured_GiB = used
+                    @info(
+                        "field-mode device memory",
+                        predicted_GiB = b.device,
+                        measured_GiB = used,
+                    )
                     # Generous: at this toy size the cuFFT workspace and the allocator's
                     # pooling are a large fraction of a small number. The check that matters
-                    # is that it is the same ORDER, i.e. no buffer is missing from the model.
+                    # is that it has the same order: no buffer is missing from the model.
                     @test used < 4 * b.device
                 end
             end
