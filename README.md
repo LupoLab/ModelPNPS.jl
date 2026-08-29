@@ -55,7 +55,7 @@ technique is a **(nonlinear process × parametrization)** pair:
 ## Installation
 
 ModelPNPS depends on [Luna.jl](https://github.com/LupoLab/Luna.jl) (registered
-in the General registry). From the Julia REPL:
+in the General registry) and requires Julia 1.12 or later. From the Julia REPL:
 
 ```julia
 import Pkg
@@ -106,6 +106,9 @@ completes in seconds —
 ```julia
 import Pkg; Pkg.test("ModelPNPS")
 ```
+
+For a faster development loop, select one isolated group with `GROUP=Core`,
+`GROUP=Physics`, `GROUP=Quality`, or `GROUP=Docs` before running `Pkg.test()`.
 
 ## Documentation
 

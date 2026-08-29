@@ -13,20 +13,9 @@ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 
 [compat]
 Adapt = "4.7.0"
-FFTW = "1"
-HDF5 = "0.17.2"
-LinearAlgebra = "1.10"
-Luna = ">= 0"
-Statistics = "1.10"
-julia = "1.10"
-
-[extras]
-AbstractFFTs = "621f4979-c628-5d54-868e-fcf4e3e8185c"
-# JLArrays is a CPU-backed AbstractGPUArray enforcing the same no-scalar-indexing
-# contract as CuArray, so the device code paths are testable without GPU hardware.
-JLArrays = "27aeb0d3-9eb9-45fb-866b-73c2ecf80fcb"
-Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-
-[targets]
-test = ["Test", "Random", "JLArrays", "AbstractFFTs"]
+FFTW = "1.10.0"
+HDF5 = "0.17.3"
+LinearAlgebra = "1.12"
+Luna = "0.6.2"
+Statistics = "1.11"
+julia = "1.12"

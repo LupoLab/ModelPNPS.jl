@@ -1,20 +1,23 @@
-using ModelPNPS
-using Documenter
+import Documenter
+import Documenter: DocMeta, deploydocs, makedocs
+import ModelPNPS
 
-DocMeta.setdocmeta!(ModelPNPS, :DocTestSetup, :(using ModelPNPS); recursive=true)
+DocMeta.setdocmeta!(ModelPNPS, :DocTestSetup, :(using ModelPNPS); recursive = true)
 
 makedocs(;
-    modules=[ModelPNPS],
-    authors="John Travers <jtravs@gmail.com> and contributors",
-    sitename="ModelPNPS.jl",
-    warnonly=[:missing_docs],
-    format=Documenter.HTML(;
-        canonical="https://jtravs.github.io/ModelPNPS.jl",
-        edit_link="main",
-        assets=String[],
-        mathengine=Documenter.MathJax3(),
+    modules = [ModelPNPS],
+    authors = "John Travers <jtravs@gmail.com> and contributors",
+    sitename = "ModelPNPS.jl",
+    warnonly = false,
+    checkdocs = :all,
+    doctest = true,
+    format = Documenter.HTML(;
+        canonical = "https://jtravs.github.io/ModelPNPS.jl",
+        edit_link = "main",
+        assets = String[],
+        mathengine = Documenter.MathJax3(),
     ),
-    pages=[
+    pages = [
         "Home" => "index.md",
         "PNPS Framework" => "pnps.md",
         "Trace Simulation" => "trace_simulation.md",
@@ -23,6 +26,6 @@ makedocs(;
 )
 
 deploydocs(;
-    repo="github.com/jtravs/ModelPNPS.jl",
-    devbranch="main",
+    repo = "github.com/jtravs/ModelPNPS.jl",
+    devbranch = "main",
 )
