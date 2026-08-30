@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Prominent links to [Croak](https://github.com/LupoLab/croak), the companion
+  retrieval package, in the README and the manual. The README gains a short
+  "Retrieval: Croak" section, and the manual's front page and scan-loading
+  documentation point at it as the consumer of the scan files ModelPNPS writes.
+
 ## [0.1.0] - 2026-08-31
 
 ### Added

@@ -268,6 +268,12 @@ nt = load_simulated_scan("my_mask_run_collected.h5";
 # nt.ω, nt.τ, nt.trace (Nω × Nτ), nt.Iω, nt.It, ...
 ```
 
+To retrieve the pulse from a scan, hand the collected file to
+[Croak](https://github.com/LupoLab/croak), the companion retrieval package: it
+reads these files directly, including the `/grid/delay_convention` marker that
+fixes the delay-axis orientation, and compares its result against the stored
+beamlet ground truth.
+
 ## Many material thicknesses from one run
 
 A delay scan propagates the field to the full substrate `thickness`, but the

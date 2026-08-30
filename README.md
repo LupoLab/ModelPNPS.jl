@@ -18,7 +18,8 @@ medium with [Luna.jl](https://github.com/LupoLab/Luna.jl) and records the trace
 the instrument would measure. The intended use is generating ground-truth traces
 for testing and developing retrieval algorithms: the input pulse is known
 exactly, so a retrieval can be scored against it. ModelPNPS does the forward
-modelling only — it does not perform retrieval.
+modelling only; the retrieval half is its companion package,
+[Croak](https://github.com/LupoLab/croak).
 
 ![Simulated TG-FROG traces of a 1 fs, 260 nm pulse after 9.5, 24 and 40 µm of fused silica](docs/src/assets/thickness_traces.png)
 
@@ -42,7 +43,7 @@ to chromatic signal collection, with the ground truth known exactly. The paper
 specifies the instrument model, bounds the approximations the simulation makes,
 and uses the traces to validate retrieval against dispersion, beam-geometry and
 collection effects that the standard analytic forward models omit. The retrieval
-side is implemented in the companion code, Croak, released with the paper.
+side is implemented in [Croak](https://github.com/LupoLab/croak), below.
 
 If you use ModelPNPS in published work, please cite the paper above. To cite the
 software itself, every release is archived on Zenodo. The DOI
@@ -51,6 +52,16 @@ each release also carries its own, so cite that one to pin the exact code you ra
 — v0.1.0 is [10.5281/zenodo.22182179](https://doi.org/10.5281/zenodo.22182179).
 `CITATION.cff` holds the same metadata, and GitHub's "Cite this repository"
 button reads it.
+
+## Retrieval: Croak
+
+[**Croak**](https://github.com/LupoLab/croak) is the other half of the pair: a
+Python package that retrieves the pulse from PNPS traces, including the scan
+files ModelPNPS writes, which it reads directly. It implements the
+differentiable forward models of the paper (in JAX), solved by L-BFGS,
+Levenberg–Marquardt, CMA-ES or dispersive COPRA, with regularisation,
+preprocessing and uncertainty quantification. Simulate a measurement here,
+retrieve it there, and score the result against the known input.
 
 ## Scope
 
@@ -154,6 +165,9 @@ Load the result for inspection:
 nt = load_simulated_scan("my_tgfrog_run_collected.h5")
 # nt.ω, nt.τ, nt.trace (Nω × Nτ), nt.Iω, nt.It, ...
 ```
+
+To retrieve the pulse from the same file, hand it to
+[Croak](https://github.com/LupoLab/croak).
 
 Two runnable, annotated scripts live in [`examples/`](examples/): a
 production-scale delay scan for a SLURM cluster, and the same measurement on a

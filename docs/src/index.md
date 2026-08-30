@@ -14,7 +14,9 @@ The point is a faithful numerical experiment rather than a fast 1-D
 approximation: the simulated trace contains the effects that the analytic
 forward models inside retrieval algorithms neglect. Because the input pulse is
 known exactly, such traces are ground truth for testing and developing
-retrieval algorithms.
+retrieval algorithms. ModelPNPS does the forward modelling only; the retrieval
+half is its companion package, [Croak](https://github.com/LupoLab/croak), which
+reads the scan files ModelPNPS writes and retrieves the pulse from them.
 
 ![Simulated TG-FROG traces of a 1 fs, 260 nm pulse after 9.5, 24 and 40 µm of fused silica](assets/thickness_traces.png)
 
@@ -43,7 +45,10 @@ in detail, bounds every approximation the simulation itself makes (at or below
 the ``10^{-4}`` level, with the delayed Raman response treated separately), and
 uses the resulting traces to validate retrieval models against the dispersion,
 beam-geometry and collection physics of few-femtosecond deep-ultraviolet
-measurements. If you use ModelPNPS in published work, please cite it.
+measurements. The retrievals themselves are done with
+[Croak](https://github.com/LupoLab/croak), which implements the paper's
+differentiable forward models and solvers. If you use ModelPNPS in published
+work, please cite the paper.
 
 ## Scope
 
