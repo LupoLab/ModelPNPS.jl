@@ -6,6 +6,7 @@
 [![Aqua QA][aqua-badge]][aqua-url]
 [![JET][jet-badge]][jet-url]
 [![Runic][runic-badge]][runic-url]
+[![DOI][doi-badge]][doi-url]
 
 **Forward modelling of PNPS pulse-characterisation measurements from the
 underlying physics.**
@@ -43,7 +44,13 @@ and uses the traces to validate retrieval against dispersion, beam-geometry and
 collection effects that the standard analytic forward models omit. The retrieval
 side is implemented in the companion code, Croak, released with the paper.
 
-If you use ModelPNPS in published work, please cite the paper above.
+If you use ModelPNPS in published work, please cite the paper above. To cite the
+software itself, every release is archived on Zenodo. The DOI
+[10.5281/zenodo.22182178][doi-url] always resolves to the latest version;
+each release also carries its own, so cite that one to pin the exact code you ran
+— v0.1.0 is [10.5281/zenodo.22182179](https://doi.org/10.5281/zenodo.22182179).
+`CITATION.cff` holds the same metadata, and GitHub's "Cite this repository"
+button reads it.
 
 ## Scope
 
@@ -257,3 +264,5 @@ ModelPNPS is jointly developed by John Travers
 [jet-url]: https://github.com/aviatesk/JET.jl
 [runic-badge]: https://img.shields.io/badge/code%20style-Runic-2a6099.svg
 [runic-url]: https://github.com/fredrikekre/Runic.jl
+[doi-badge]: https://zenodo.org/badge/DOI/10.5281/zenodo.22182178.svg
+[doi-url]: https://doi.org/10.5281/zenodo.22182178

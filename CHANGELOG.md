@@ -7,7 +7,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.1.0] - "2026-08-31"
+## [0.1.0] - 2026-08-31
 
 ### Added
 
@@ -107,4 +107,5 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `arraytype`, `beamlets_on_host`, and the `run_scan` and `simulate_delay_point`
   solver keywords).
 
-[Unreleased]: https://github.com/LupoLab/ModelPNPS.jl/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/LupoLab/ModelPNPS.jl/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/LupoLab/ModelPNPS.jl/releases/tag/v0.1.0
