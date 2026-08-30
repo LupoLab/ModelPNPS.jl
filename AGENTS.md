@@ -233,7 +233,6 @@ Doctests are compared as text, with no tolerance. Any digit that shifts across a
 
 - Make clean, logical git commits with descriptive but not overly verbose commit messages.
 - Prefer more frequenct clean commits over large big ones.
-- Git commits should be authored by John Travers <jtravs@gmail.com>. You can put yourself as co-author.
 - *Never* push.
 - You can fetch, pull, branch when instructed to do so. If you want to do this, ask.
 - Do not make releases or change release versions
