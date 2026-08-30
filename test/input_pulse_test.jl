@@ -156,8 +156,9 @@ import FFTW
         @test sqrt(sum(abs2, e2 .- ph .* e1)) < 3.0e-2
 
         # The input and beamlet truth diagnostics must be single pulses centred in
-        # the Luna time window, not periodic halves at both endpoints. This is the
-        # failure which made croak's truth.fwhm return NaN for the RDW file.
+        # the Luna time window, not periodic halves at both endpoints. That failure
+        # mode made a downstream FWHM measurement return NaN for an injected data
+        # pulse.
         for (tk, Ik) in (
                 ("t", "It"), ("To", "Ito"),
                 ("t", "It_beamlet"), ("To", "Ito_beamlet"),

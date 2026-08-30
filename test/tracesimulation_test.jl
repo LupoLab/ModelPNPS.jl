@@ -975,7 +975,7 @@ import Random: MersenneTwister, Xoshiro
             R = 40.0e-6, N = 32
         )
         τ = 1.5e-15
-        # The scan input must carry the probe at -τ (gate-delay/paper convention).
+        # The scan input must carry the probe at -τ (the gate-delay convention).
         got = TS.delayed_input(setup, τ)
         @test got ≈ setup.Eωk_g12 .+
             TS.apply_delay(setup.Eωk_t_base, setup.grid, -τ)

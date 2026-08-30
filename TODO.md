@@ -6,19 +6,13 @@ should either get done or be argued out of existence — it is not a wish list.
 
 ## Examples
 
-- **Bring `examples/` up to the standards in `AGENTS.md`.** The example scripts
-  predate the current conventions and were left untouched by the package refactor.
-  They are outside the Runic scope (`src test docs`), so nothing checks them: 28
-  lines exceed the 92-character limit, mostly `@printf` format strings, and the
-  naming and comment conventions vary between scripts. Reflowing working operator
-  scripts carries real risk of breaking a running campaign, so this needs doing
-  deliberately, script by script, rather than by a global pass.
-
-- **Decide which examples are the *documented* ones.** `README.md` and the manual
-  point at three scripts (two mask-scheme runs and the Gaussian comparison), but the
-  directory now holds the whole H200 campaign as well. Either curate a small set of
-  canonical examples and move the campaign scripts somewhere that says what they are,
-  or document the campaign scripts properly.
+- **`examples/` is not checked by anything.** The directory now holds two curated
+  scripts (`tgfrog_window_series.jl` and its GPU variant), but they are outside the
+  Runic scope (`src test docs`) and outside the test suite, so nothing verifies that
+  they stay formatted or even parse. Adding them to the Runic scope is cheap; a
+  parse-only check (`include` with the scan call behind the existing dry-run gate)
+  would need a CI environment that can load the package, which exists. Deferred with
+  the docs `@example` work below, which has the same shape.
 
 ## Documentation
 
@@ -70,8 +64,8 @@ should either get done or be argued out of existence — it is not a wish list.
 
 - **No GPU coverage in CI.** The device code paths are exercised on `JLArrays`, which
   catches array-type and host/device mixing bugs but not CUDA-specific ones. A
-  self-hosted runner with a GPU would close that gap; failing that, the campaign
-  scripts are the only real coverage.
+  self-hosted runner with a GPU would close that gap; failing that, real-hardware
+  coverage only happens when someone runs a scan.
 
 ## Upstream (Luna)
 
@@ -100,5 +94,39 @@ should either get done or be argued out of existence — it is not a wish list.
 - **`[sources]` blocks `Pkg.develop` on Luna in this project.** With a URL source in
   `Project.toml`, `Pkg.develop(path = "~/.julia/dev/Luna")` fails with ``path` and
   `url` are conflicting specifications`. To test ModelPNPS against in-progress Luna
-  edits, use a separate development environment that `develop`s both packages, the
-  way the pod scripts do, rather than the ModelPNPS project environment.
+  edits, use a separate development environment that `develop`s both packages,
+  rather than the ModelPNPS project environment.
+
+## GPU
+
+Deferred device-path work, in rough order of value. All of it is optimisation or
+validation; the path itself works and is covered on `JLArrays` in CI.
+
+- **Host peak during `build_setup`.** The beamlet build holds more intermediate
+  fields than it needs to — of order 9 GiB (envelope) and 18 GiB (field mode) of the
+  setup peak could go, by building beamlets in place. The host peak decides how many
+  scan instances share a machine, so this is the highest-value item.
+
+- **The envelope device budget is unvalidated on hardware.** `memory_budget`'s
+  field-mode figure matches a real card to 0.1%, but the envelope path measured
+  about 11 GiB above the model during a delay point. Nothing is at risk (the shapes
+  fit with margin), but the number the drivers refuse shapes on deserves the same
+  validation the field side has.
+
+- **Reuse the delayed-input buffer across delay points.** `delayed_input` allocates
+  a fresh device field per point, which the solver adopts and frees — an
+  allocate/free cycle per point against a memory pool that then needs
+  `device_reclaim()`. A setup-owned buffer would remove the churn. It is the `input`
+  term in `memory_budget`.
+
+- **Shrink the field-mode analytic-signal buffer.** The `:nothg` response allocates
+  a complex `(nto, ny, nx)` buffer — 18 GiB at `N = 768`, the largest term in the
+  field-mode budget. An `|E_a|² = E² + H[E]²` formulation would trade it for one
+  real buffer at half the size plus one extra transform. Worth doing only if
+  field mode has to run on an 80 GB card.
+
+- **No field-versus-envelope comparison tool in the tree.**
+  `verify_against_collected` refuses on the `Nω` mismatch between the two grids.
+  The right comparison is between physical spectral densities splined onto a common
+  band, reported per depth relative to the trace peak; the recipe exists as a
+  testset but was deliberately not shipped as API.

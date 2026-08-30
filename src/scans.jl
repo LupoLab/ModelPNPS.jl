@@ -170,8 +170,8 @@ function run_scan(
             cg["zsave"] = zvec
             cg["rtol"] = rtol
             cg["max_dz"] = max_dz > 0 ? max_dz : setup.grid.zmax / 2
-            # Delay-convention marker: traces are stored in the paper's
-            # gate-delay frame; loaders must not reverse the axis.
+            # Delay-convention marker: traces are stored in the gate-delay
+            # frame (see `delayed_input`); loaders must not reverse the axis.
             cg["delay_convention"] = "gate"
             cg["error_norm"] = _norm_name(normx)
             # Apodisation cadence. 1 = the spectral/temporal windows are applied

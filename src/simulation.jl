@@ -673,16 +673,16 @@ _norm_name(f) = f === Luna.RK45.weaknorm ? "weaknorm" : "custom"
 """
     delayed_input(setup, τ) -> Array{ComplexF64,3}
 
-Coherent input field for scan delay `τ`, in the paper's **gate-delay
-convention**: the stored trace ``T(ω, τ)`` has the GATE pair delayed by `+τ`
-relative to the probe. Physically the probe arm carries the delay stage, so
-the probe is delayed by `-τ`, which equals gating at `+τ` up to a global time
-shift that the time-integrating measurement cannot see. The same-τ gate pair
-stays untouched, so the smearing structure (same-τ gate pair; paper
-Appendix A.2) is preserved. Files written with this convention carry
+Coherent input field for scan delay `τ`, in the **gate-delay convention**: the
+stored trace ``T(ω, τ)`` has the GATE pair delayed by `+τ` relative to the
+probe. Physically the probe arm carries the delay stage, so the probe is
+delayed by `-τ`, which equals gating at `+τ` up to a global time shift that the
+time-integrating measurement cannot see. The same-τ gate pair stays untouched,
+so the geometrical smearing structure of the crossed-beam layout (a same-τ gate
+pair) is preserved. Files written with this convention carry
 `/grid/delay_convention = "gate"` and need NO delay-axis reversal on loading
-(croak's `reverse_trace` auto-detects; legacy marker-less files are reversed
-as before).
+(retrieval loaders can detect the marker; legacy marker-less files are
+reversed as before).
 """
 function delayed_input(setup::TGFROGSetup, τ::Real)
     # Single fused broadcast: one field-sized allocation instead of two
@@ -858,15 +858,16 @@ function simulate_delay_point(
         # so its RELATIVE accuracy is ~(pump/signal) × rtol and degrades with
         # propagation distance and with decreasing energy. At the defaults
         # (rtol = 1e-6, max_dz = zmax/2, 0.1 µJ) the collected signal spectrum
-        # carries ~1% (mid-slab) to ~10% (40 µm) solver-dependent error —
-        # measured in FROG_paper_new/90_solver_accuracy_test.jl. Tighten to
-        # rtol ≤ 1e-8 and a µm-scale max_dz for quantitative small-effect
-        # studies (Raman A/B, low-energy runs, residual-floor analyses).
+        # carries ~1% (mid-slab) to ~10% (40 µm) solver-dependent error,
+        # measured on the production geometry against an rtol = 1e-8
+        # reference. Tighten to rtol ≤ 1e-8 and a µm-scale max_dz for
+        # quantitative small-effect studies (Raman A/B, low-energy runs,
+        # residual-floor analyses).
         # step_on = the save positions: the stepper lands on each zsave point
         # exactly, so saved slices are step endpoints rather than dense-output
         # interpolations — the interpolant shares the error norm's weak-signal
-        # blind spot and interpolated saves scatter at the percent level
-        # between runs (FINDINGS F14.12 twin test).
+        # blind spot, and interpolated saves scatter at the percent level
+        # between otherwise identical twin runs.
         # preserve_input=false: the solver adopts Eωk_in as a working buffer instead of
         # copying it (one field-sized allocation less at peak); Eωk_in is not used again
         # on this path

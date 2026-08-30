@@ -9,6 +9,22 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A reference to the paper the package was built for — Travers & Brahms, *Extreme
+  ultrashort pulse retrieval with differentiable physical forward models* (in
+  preparation; the reference is a placeholder until publication) — in the README and
+  throughout the manual, together with two figures generated from that paper's
+  simulation data: the 1 fs substrate-thickness trace series (README and manual
+  front page) and the single-cycle RDW trace with its injected pulse (input-pulses
+  page). The manual pages now point at the paper's quantitative findings where they
+  bear on a feature: the Raman trace-versus-pulse bound on the nonlinear-response
+  page, and the envelope-exoneration measurement on the field-mode page.
+- Two curated example scripts replacing the previous contents of `examples/`:
+  `tgfrog_window_series.jl`, a production-scale delay scan for a SLURM cluster with
+  a collection-window series and a substrate-thickness ladder, and
+  `tgfrog_window_series_gpu.jl`, the same measurement on a single GPU with a
+  chirped input. Both explain the physics they exercise and carry no
+  site-specific configuration.
+
 - Manual pages for the features that had no documentation outside their docstrings:
   data-driven input pulses, the Kerr and Raman responses, field-resolved mode,
   running on a GPU, and accuracy/validation. The self-diffraction geometry is now
@@ -46,8 +62,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   extra, but it is required for the package to load at all, and Luna has to be added
   before ModelPNPS so the resolver sees the branch first.
 
+### Removed
+
+- The operator and campaign scripts that had accumulated in `examples/` — cluster
+  submission wrappers, GPU benchmarks, verification drivers and their shell scripts —
+  along with `GPU-TODO.md`. They referenced private hostnames, scratch paths and
+  internal working notes, and they documented one research campaign rather than the
+  package. The still-open GPU work is distilled into a `GPU` section of `TODO.md`,
+  and source comments that pointed at internal notes now state their content
+  directly.
+
 ### Changed
 
+- A prose pass over the README and manual: plainer statements, less selling, and
+  the paper carrying the motivation. The README's quick start, installation and
+  feature content is unchanged.
 - Raised the minimum supported Julia version to 1.12 and replaced the unbounded Luna
   compatibility entry with the tested 0.6.2 series.
 - Applied Runic formatting across the source, tests, and documentation build script.

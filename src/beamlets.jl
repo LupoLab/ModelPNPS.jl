@@ -241,7 +241,7 @@ function build_beamlets(
     # HE11 profile, giving them unequal energy; SD's signal is E^2 G*, so that
     # asymmetry does not cancel.
     #
-    # Which beam is delayed follows croak's SD kernel E^2 G*: the GATE appears
+    # Which beam is delayed follows the SD signal kernel E^2 G*: the GATE appears
     # once, carries the conjugation, and takes the delay — the same convention
     # as TG, where the delay rides the singly-appearing conjugated arm.
     if get(geom, :geometry, :tg) === :sd
