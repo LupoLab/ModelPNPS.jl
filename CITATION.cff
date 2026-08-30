@@ -19,6 +19,12 @@ authors:
     given-names: Christian
     orcid: "https://orcid.org/0000-0002-8009-3547"
     affiliation: Heriot-Watt University
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22182178
+    description: >-
+      Concept DOI for the archived software, resolving to the latest release.
+      Each release also has its own DOI; cite that one to pin an exact version.
 version: 0.1.0
 date-released: "2026-08-31"
 license: MIT
