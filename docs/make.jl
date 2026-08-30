@@ -22,6 +22,11 @@ makedocs(;
         "Home" => "index.md",
         "PNPS Framework" => "pnps.md",
         "Trace Simulation" => "trace_simulation.md",
+        "Input Pulses" => "input_pulses.md",
+        "Nonlinear Response" => "nonlinear_response.md",
+        "Field-Resolved Mode" => "field_mode.md",
+        "Running on a GPU" => "gpu.md",
+        "Accuracy and Validation" => "accuracy.md",
         "API Reference" => "interface.md",
     ],
 )

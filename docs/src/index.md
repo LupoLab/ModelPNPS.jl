@@ -44,16 +44,29 @@ strongly phase-mismatched geometries).
 The currently implemented process is **TG-FROG** (Transient-Grating FROG): a
 degenerate four-wave-mixing measurement in a thin solid substrate, modelled with
 two beam schemes (hollow-fibre HE₁₁ mode through a four-hole boxcar mask, or a
-simplified Gaussian-beam baseline) and a choice of signal-extraction windows.
-See [Trace Simulation](trace_simulation.md) for the full description and worked
-examples, and the [PNPS Framework](pnps.md) page for the broader taxonomy and
-roadmap.
+simplified Gaussian-beam baseline) and a choice of signal-extraction windows. A
+**self-diffraction** beam layout is also available, as the input geometry for the
+planned SD-FROG process. See [Trace Simulation](trace_simulation.md) for the full
+description and worked examples, and the [PNPS Framework](pnps.md) page for the
+broader taxonomy and roadmap.
 
-!!! note "Designed for HPC"
-    A full delay scan at realistic grid sizes is CPU-hours of work and is
-    intended to run on a SLURM cluster. The unit tests stay laptop-fast by
-    exercising every primitive without the propagation step, plus one tiny
-    end-to-end smoke run.
+Beyond the core forward model, the package can inject a measured or separately
+simulated pulse in place of the analytic Gaussian
+([Input Pulses](input_pulses.md)), add the delayed nuclear response
+([Nonlinear Response](nonlinear_response.md)), and propagate a real
+carrier-resolved field instead of an envelope
+([Field-Resolved Mode](field_mode.md)) — the last of these being how the envelope
+approximation itself gets tested at single-cycle durations.
+
+!!! note "Runs on a GPU, and that is the fast way"
+    A full delay scan at realistic grid sizes is hours of work per delay point on
+    CPUs. On an NVIDIA GPU the whole propagation runs on the device: **42 s per
+    delay point on an H200 against 1.9 h on two CPU cores**, a factor of about
+    160. See [Running on a GPU](gpu.md). The CPU path remains fully supported and
+    is intended for a SLURM cluster, one task per delay.
+
+    The unit tests stay laptop-fast either way, by exercising every primitive
+    without the propagation step, plus one tiny end-to-end smoke run.
 
 ## Contents
 
@@ -61,6 +74,11 @@ roadmap.
 Pages = [
     "pnps.md",
     "trace_simulation.md",
+    "input_pulses.md",
+    "nonlinear_response.md",
+    "field_mode.md",
+    "gpu.md",
+    "accuracy.md",
     "interface.md",
 ]
 Depth = 2

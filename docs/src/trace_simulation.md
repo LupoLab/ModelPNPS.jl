@@ -90,6 +90,59 @@ output is computed for each window in turn and saved with a suffix. The standard
 two-window pattern `[PlanckWindow, PlanckOmegaWindow]` produces output keys
 `Iω_win`, `Iω_win_reimaged`, `Iω_win_ωdep`, `Iω_win_ωdep_reimaged`.
 
+## Self-diffraction geometry
+
+The default layout is the four-hole boxcar above, selected by `geometry = :tg`.
+`geometry = :sd` builds a **self-diffraction** geometry instead: two collinear
+holes rather than four, on one axis, with the signal at
+
+```math
+    \mathbf{k}_\text{signal} = 2\mathbf{k}_E - \mathbf{k}_G,
+```
+
+where `E` is the probe and `G` the gate. With the two holes at ``\pm s/2``
+(``s`` = `mask_spacing + mask_diam`, centre to centre) the signal appears at
+``-3s/2`` — one further slot out, on the probe's side.
+
+```julia
+setup = build_setup(;
+    λ0 = 260e-9, τfwhm = 2e-15, energy = 0.2e-6,
+    thickness = 40e-6, material = :SiO2,
+    mask_diam = 1.0e-3, mask_spacing = 0.5e-3,
+    beam = HE11Beam(125e-6, 5.0, 0.1),
+    window = PhysicalMaskWindow(; holex = -1.5 * 1.5e-3, holey = 0.0,
+                                  holediam = 1.0e-3, zmask = 0.1),
+    geometry = :sd,
+)
+```
+
+The layout is **symmetric** about the axis — probe at ``-s/2``, gate at
+``+s/2`` — rather than putting the probe on axis and centring the signal. The
+centred variant needs a 27 % narrower grid, but cuts the two beams from very
+different parts of the HE₁₁ profile, giving them unequal energy; the SD signal is
+``E^2G^*``, so that asymmetry does not cancel. Which beam carries the delay follows
+the same convention as TG: the gate appears once, carries the conjugation, and takes
+the delay.
+
+`geometry` selects both the beamlet layout and the k-space bound used by
+[`optimal_spatial_grid`](@ref) — the SD signal position bounds the nonlinear
+k-content directly, so unlike the boxcar no extra factor of three is applied. The
+signal position is written to the output metadata as `sd_signal_x`, along with
+`sd_separation_cc`, so a collection window can be placed from the file.
+
+!!! note "What is and is not supported"
+    `geometry = :sd` is implemented for [`HE11Beam`](@ref) only, and
+    [`build_setup`](@ref) throws an `ArgumentError` for any other beam model — the
+    Gaussian builder always places three beams at the boxcar corners and would
+    otherwise silently produce a TG field on an SD-sized grid. An unknown `geometry`
+    is likewise rejected rather than treated as `:tg`.
+
+    The windowed outputs (`Iω_win`, `Iω_win_reimaged`) are correct for SD provided
+    the window is placed at the SD signal position. The `Iω_full` diagnostic and
+    [`signal_quadrant_norm`](@ref) are **boxcar-specific**: both integrate the
+    ``k_x < 0, k_y < 0`` quadrant, which is not where the SD signal sits. Treat them
+    as not yet meaningful in this geometry.
+
 ## Worked example: mask scheme
 
 ```julia
@@ -335,12 +388,24 @@ retrieval forward model reproduces rather than an artifact to correct.
 ## Computational cost
 
 Per delay point, the propagation cost is dominated by the 3-D FFTs in the
-split-step solver. Empirically, with `Nω ≈ 4096`, `N ≈ 256–1024`, substrate
-thickness 10 µm, and Luna's default tolerances, one delay point takes a few tens
-of seconds to a few minutes on a single SLURM core. A full 80-delay scan with
-one task per delay completes in well under an hour given enough parallelism. Use
-`Scans.SlurmExec` with `arraymode=:batch` to dispatch the full scan as one SLURM
+split-step solver, so it scales with the transverse grid `N` and the number of
+frequency bins.
+
+**On a GPU** the whole propagation and extraction path runs on the device, and one
+delay point at the production shape takes **42 s on an NVIDIA H200** against
+**1.9 h on two CPU cores** — a factor of about 160. A 200-point scan is then a
+couple of hours on one card rather than a fortnight. This is the recommended way to
+run a campaign; see [Running on a GPU](gpu.md) for the keyword, the memory budget
+and the practical setup.
+
+**On CPUs**, a delay point at `Nω ≈ 4096` and `N ≈ 256–1024` takes tens of minutes
+to hours on a single core, so a scan needs one task per delay. Use
+`Scans.SlurmExec` with `arraymode = :batch` to dispatch the whole scan as one SLURM
 array job.
+
+Either way, [`memory_budget`](@ref) tells you what a configuration will need before
+you launch it, and `zsave` gets a whole ladder of substrate thicknesses out of one
+scan — see [Many material thicknesses from one run](@ref).
 
 ## Testability
 

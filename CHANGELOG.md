@@ -9,15 +9,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- `build_setup` and `optimal_spatial_grid` now reject an unknown `geometry`, and
-  `build_setup` rejects `geometry = :sd` for a beam model whose builder only ever
-  places three beams. Both cases previously produced a boxcar run with no diagnostic.
-
-### Added
-
+- Manual pages for the features that had no documentation outside their docstrings:
+  data-driven input pulses, the Kerr and Raman responses, field-resolved mode,
+  running on a GPU, and accuracy/validation. The self-diffraction geometry is now
+  described in the trace-simulation chapter.
 - README badges for CI, documentation, coverage, Aqua, JET and Runic, and the CI
   jobs behind them: coverage upload to Codecov, a standalone `Quality` group job,
   and a Runic formatting check.
+- `TODO.md`, recording deferred work — the `examples/` cleanup, the absence of
+  executable manual examples and doctests, the boxcar-specific SD diagnostics, and
+  the CI services still to be enabled.
+- `build_setup` and `optimal_spatial_grid` now reject an unknown `geometry`, and
+  `build_setup` rejects `geometry = :sd` for a beam model whose builder only ever
+  places three beams. Both cases previously produced a boxcar run with no diagnostic.
 
 ### Changed
 

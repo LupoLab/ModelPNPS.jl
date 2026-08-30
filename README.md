@@ -49,13 +49,20 @@ technique is a **(nonlinear process × parametrization)** pair:
 |-----------|---------|-----------------|--------|
 | **TG-FROG** | transient grating (four-wave mixing) | delay | ✅ implemented |
 | X-TG-FROG | TG + reference | delay | 🔜 planned |
-| SD-FROG | self-diffraction | delay | 🔜 planned |
+| SD-FROG | self-diffraction | delay | 🟡 input geometry implemented |
 | SHG-FROG | second-harmonic generation | delay | ⏳ pending Luna SHG/SFG support |
 | THG-FROG | third-harmonic generation | delay | ⏳ planned |
 | X-FROG (SHG/SD/THG) | cross-correlation | delay | ⏳ planned |
 | SHG-d-scan | second-harmonic generation | glass insertion | ⏳ blocked on Luna |
 | SD-d-scan | self-diffraction | glass insertion | 🔜 planned |
 | Time-domain ptychography | SHG/THG/SD | position | ⏳ planned |
+
+The **self-diffraction** beam layout is built and grid-sized:
+`build_setup(; geometry = :sd, ...)` places two collinear holes instead of the
+four-hole boxcar and puts the `2k_E − k_G` signal one slot further out on the same
+axis. Windowed extraction works there as it does for TG; the `Iω_full` diagnostic
+and `signal_quadrant_norm` are still boxcar-specific. See the
+[self-diffraction geometry][sd-docs] section of the manual.
 
 ## Installation
 
@@ -65,6 +72,14 @@ in the General registry) and requires Julia 1.12 or later. From the Julia REPL:
 ```julia
 import Pkg
 Pkg.add(; url = "https://github.com/LupoLab/ModelPNPS.jl")
+```
+
+For GPU runs, add CUDA.jl and the `modal-fixed` branch of Luna.jl, which the
+device path currently requires:
+
+```julia
+Pkg.add(; url = "https://github.com/jtravs/Luna.jl", rev = "modal-fixed")
+Pkg.add("CUDA")
 ```
 
 ## Quick start
@@ -100,13 +115,65 @@ nt = load_simulated_scan("my_tgfrog_run_collected.h5")
 Runnable, annotated scripts live in [`examples/`](examples/): two mask-scheme
 runs (1 fs and 2 fs) and the Gaussian-beam comparison.
 
+## Beyond the analytic Gaussian
+
+The forward model is not restricted to a transform-limited Gaussian in an
+instantaneous-Kerr medium:
+
+- **Measured or simulated input pulses.** Inject a real complex spectrum with
+  `input_pulse`, after conditioning it with `load_input_pulse`,
+  `spectral_window!` and `center_pulse!` — the way to test a retrieval against
+  the light a particular laser actually produces.
+- **Delayed nuclear response.** `raman = true` adds the Raman contribution
+  alongside the electronic Kerr effect, in a convention whose quasi-static limit
+  reproduces the Kerr-only response exactly.
+- **Field-resolved propagation.** `field_mode = true` propagates the real,
+  carrier-resolved field instead of an envelope — no carrier split, no dropped
+  third harmonic — which is how the envelope approximation itself gets tested at
+  single-cycle durations.
+- **Free intermediate thicknesses.** One `zsave` vector gets a whole ladder of
+  substrate thicknesses out of a single scan.
+
+## Runs on a GPU — about 160× faster
+
+The whole propagation and extraction path runs on an NVIDIA GPU by passing one
+keyword:
+
+```julia
+setup_args = (; λ0=260e-9, τfwhm=1e-15, energy=0.1e-6,
+                thickness=40e-6, material=:SiO2,
+                mask_diam=1.0e-3, mask_spacing=1.0e-3,
+                beam, window,
+                arraytype = :cuda, beamlets_on_host = true)
+
+run_scan(setup_args, τ; scan_name="my_run", exec=Scans.LocalExec())
+```
+
+Measured on the same geometry:
+
+| Hardware | Per delay point | 200-point scan |
+|---|---|---|
+| NVIDIA H200 | **42 s** | ~2.3 h |
+| 2 CPU cores | **1.9 h** | ~16 days |
+
+`memory_budget(setup_args)` reports what a configuration will need on the device
+and the host before you launch it — an envelope run at `N = 768` is about 24 GiB
+of device memory at 25–30 s per delay point.
+
+GPU support is **experimental but working**, and currently needs the
+`modal-fixed` branch of Luna.jl (see [Installation](#installation)). The device
+code paths are covered in CI on `JLArrays`, so they are tested without a GPU. See
+the [Running on a GPU](https://lupolab.github.io/ModelPNPS.jl/dev/gpu/) manual
+page for the memory budget, the world-age rule that decides where `arraytype`
+must be passed, and the practical setup.
+
 ## Designed for HPC
 
-A full delay scan at realistic grid sizes (`Nω` ≈ 4096, `N` ≈ 256–1024) is
-CPU-hours of work and is intended to run on a SLURM cluster via
-`Luna.Scans.SlurmExec`. The test suite stays laptop-fast: it exercises every
-primitive without the propagation step (plus one tiny end-to-end smoke run) and
-completes in seconds —
+The CPU path remains fully supported. A full delay scan at realistic grid sizes
+(`Nω` ≈ 4096, `N` ≈ 256–1024) is CPU-hours of work per delay point and is
+intended to run on a SLURM cluster via `Luna.Scans.SlurmExec`, one task per
+delay. The test suite stays laptop-fast: it exercises every primitive without the
+propagation step (plus one tiny end-to-end smoke run) and completes in seconds —
 
 ```julia
 import Pkg; Pkg.test("ModelPNPS")
@@ -117,15 +184,26 @@ For a faster development loop, select one isolated group with `GROUP=Core`,
 
 ## Documentation
 
-Full documentation — physical model, beam and window types, worked examples,
-grid sizing, and the PNPS framework — is built with
-[Documenter.jl](https://documenter.juliadocs.org/) under [`docs/`](docs/).
+Full documentation is at
+[lupolab.github.io/ModelPNPS.jl](https://lupolab.github.io/ModelPNPS.jl/dev/),
+built with [Documenter.jl](https://documenter.juliadocs.org/) from [`docs/`](docs/):
+
+- **Trace Simulation** — the physical model, beam and window types, worked
+  examples, grid sizing, and the self-diffraction geometry.
+- **Input Pulses** — injecting a measured or separately simulated pulse.
+- **Nonlinear Response** — the Kerr and Raman responses and their conventions.
+- **Field-Resolved Mode** — propagating a real field instead of an envelope.
+- **Running on a GPU** — the device path, memory budgeting and practical setup.
+- **Accuracy and Validation** — weak-signal error control, apodisation cadence
+  and A/B verification against reference data.
+- **PNPS Framework** — the taxonomy and roadmap.
 
 ## Credits
 ModelPNPS is jointly developed by John Travers
 ([@jtravs](https://github.com/jtravs)) and Chris Brahms
 ([@chrisbrahms](https://github.com/chrisbrahms)).
 
+[sd-docs]: https://lupolab.github.io/ModelPNPS.jl/dev/trace_simulation/#Self-diffraction-geometry
 [docs-badge]: https://img.shields.io/badge/docs-dev-blue.svg
 [docs-url]: https://lupolab.github.io/ModelPNPS.jl/dev/
 [ci-badge]: https://github.com/LupoLab/ModelPNPS.jl/actions/workflows/CI.yml/badge.svg?branch=main
