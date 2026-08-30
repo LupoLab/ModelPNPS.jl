@@ -32,6 +32,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - README badges for CI, documentation, coverage, Aqua, JET and Runic, and the CI
   jobs behind them: coverage upload to Codecov, a standalone `Quality` group job,
   and a Runic formatting check.
+- `CITATION.cff` and `.zenodo.json`, so the archived record and GitHub's "Cite
+  this repository" carry real names, ORCIDs and affiliations rather than account
+  handles.
 - `codecov.yml`, reporting coverage informationally rather than as a gate, since a
   suite that deliberately skips the propagation step cannot meet a line-coverage
   target that would mean anything.
@@ -77,6 +80,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A prose pass over the README and manual: plainer statements, less selling, and
   the paper carrying the motivation. The README's quick start, installation and
   feature content is unchanged.
+- Set the version to 0.1.0. The package is usable but still moving — `TODO.md`
+  records the self-diffraction diagnostics being boxcar-specific and the examples
+  not yet meeting the project's own standards — so 1.0.0 would claim a stability
+  that is not there yet.
 - Raised the minimum supported Julia version to 1.12 and replaced the unbounded Luna
   compatibility entry with the tested 0.6.2 series.
 - Applied Runic formatting across the source, tests, and documentation build script.

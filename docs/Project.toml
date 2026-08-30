@@ -7,4 +7,4 @@ ModelPNPS = {path = ".."}
 
 [compat]
 Documenter = "1.17.0"
-ModelPNPS = "1"
+ModelPNPS = "0.1"

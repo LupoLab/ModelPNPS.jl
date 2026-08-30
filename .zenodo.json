@@ -1,0 +1,28 @@
+{
+  "upload_type": "software",
+  "title": "ModelPNPS.jl: high-fidelity forward modelling of PNPS pulse-characterisation traces",
+  "description": "<p>ModelPNPS generates synthetic PNPS (Parametrized Nonlinear Process Spectrum) pulse-characterisation traces directly from the underlying experimental physics, by full spatially-resolved nonlinear propagation through the measurement medium using Luna.jl. Given an analytic or measured input pulse and an experimental geometry, it produces the trace a real apparatus would record &mdash; capturing spatial beam overlap and crossing geometry, mode shape, mask edges, chromatic vignetting of the signal, material dispersion, phase matching and the full nonlinear response. These ground-truth traces are intended for testing pulse-retrieval algorithms against a known input pulse and for developing new characterisation techniques. The currently implemented process is TG-FROG (Transient-Grating FROG).</p>",
+  "creators": [
+    {
+      "name": "Travers, John C.",
+      "orcid": "0000-0003-0350-9104",
+      "affiliation": "Heriot-Watt University"
+    },
+    {
+      "name": "Brahms, Christian",
+      "orcid": "0000-0002-8009-3547",
+      "affiliation": "Heriot-Watt University"
+    }
+  ],
+  "version": "0.1.0",
+  "license": "mit",
+  "access_right": "open",
+  "keywords": [
+    "ultrafast optics",
+    "pulse characterisation",
+    "frequency-resolved optical gating",
+    "FROG",
+    "nonlinear optics",
+    "Julia"
+  ]
+}

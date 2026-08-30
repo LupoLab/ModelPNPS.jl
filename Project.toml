@@ -1,6 +1,6 @@
 name = "ModelPNPS"
 uuid = "96957ea8-70b2-4fa7-b6e5-a778e7c886d1"
-version = "1.0.0-DEV"
+version = "0.1.0"
 authors = ["John Travers <jtravs@gmail.com>"]
 
 [deps]

@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using these metadata."
+title: ModelPNPS.jl
+abstract: >-
+  High-fidelity forward modelling of PNPS (Parametrized Nonlinear Process
+  Spectrum) pulse-characterisation traces by full spatially-resolved nonlinear
+  propagation. Given an analytic or measured input pulse and an experimental
+  geometry, it produces the trace a real apparatus would record — including
+  spatial beam overlap, mode shape, mask edges, chromatic vignetting, material
+  dispersion, phase matching and the full nonlinear response. The implemented
+  process is TG-FROG (Transient-Grating FROG).
+type: software
+authors:
+  - family-names: Travers
+    given-names: John C.
+    orcid: "https://orcid.org/0000-0003-0350-9104"
+    affiliation: Heriot-Watt University
+  - family-names: Brahms
+    given-names: Christian
+    orcid: "https://orcid.org/0000-0002-8009-3547"
+    affiliation: Heriot-Watt University
+version: 0.1.0
+date-released: "2026-08-31"
+license: MIT
+repository-code: "https://github.com/LupoLab/ModelPNPS.jl"
+url: "https://lupo-lab.com/ModelPNPS.jl/"
+keywords:
+  - ultrafast optics
+  - pulse characterisation
+  - frequency-resolved optical gating
+  - FROG
+  - nonlinear optics
+  - Julia
