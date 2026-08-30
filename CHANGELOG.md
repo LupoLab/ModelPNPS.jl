@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - "2026-08-31"
+
 ### Added
 
 - A reference to the paper the package was built for — Travers & Brahms, *Extreme
