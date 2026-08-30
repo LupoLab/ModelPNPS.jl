@@ -12,7 +12,7 @@ makedocs(;
     checkdocs = :all,
     doctest = true,
     format = Documenter.HTML(;
-        canonical = "https://jtravs.github.io/ModelPNPS.jl",
+        canonical = "https://lupolab.github.io/ModelPNPS.jl",
         edit_link = "main",
         assets = String[],
         mathengine = Documenter.MathJax3(),
@@ -28,7 +28,7 @@ makedocs(;
 
 if get(ENV, "CI", "false") == "true"
     deploydocs(;
-        repo = "github.com/jtravs/ModelPNPS.jl",
+        repo = "github.com/LupoLab/ModelPNPS.jl",
         devbranch = "main",
     )
 end

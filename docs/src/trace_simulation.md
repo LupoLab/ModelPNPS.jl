@@ -145,8 +145,8 @@ run_scan(setup, τ; scan_name="my_gaussian_run", exec)
 See the
 [`tgfrog_simulation_gaussian.jl` example][gaussian-example].
 
-[mask-example]: https://github.com/jtravs/ModelPNPS.jl/blob/main/examples/tgfrog_simulation_mask_2fs.jl
-[gaussian-example]: https://github.com/jtravs/ModelPNPS.jl/blob/main/examples/tgfrog_simulation_gaussian.jl
+[mask-example]: https://github.com/LupoLab/ModelPNPS.jl/blob/main/examples/tgfrog_simulation_mask_2fs.jl
+[gaussian-example]: https://github.com/LupoLab/ModelPNPS.jl/blob/main/examples/tgfrog_simulation_gaussian.jl
 
 ## Spatial grid sizing
 

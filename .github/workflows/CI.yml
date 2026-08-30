@@ -13,6 +13,8 @@ concurrency:
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 jobs:
   test:
+    # The full suite: unit tests, Aqua, ExplicitImports, JET error analysis and
+    # doctests. `[compat] julia` is 1.12, so nothing older is tested.
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -23,9 +25,8 @@ jobs:
       fail-fast: false
       matrix:
         version:
-          - '1.10'
           - '1.12'
-          - 'pre'
+          - '1'
         os:
           - ubuntu-latest
         arch:
@@ -39,3 +40,47 @@ jobs:
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+      - uses: julia-actions/julia-processcoverage@v1
+      - uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  quality:
+    # The Quality group on its own, so a hygiene regression is a distinct red
+    # check rather than one failure buried in the full run.
+    name: Aqua, ExplicitImports and JET
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.12'
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        env:
+          GROUP: Quality
+
+  format:
+    # Runic owns formatting and has no configuration, so this is a pass/fail
+    # check on the exact command from AGENTS.md. Runic lives in its own shared
+    # environment and is deliberately not a project dependency.
+    name: Runic formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.12'
+      - uses: julia-actions/cache@v2
+      - name: Install Runic
+        run: julia --project=@runic --startup-file=no -e 'using Pkg; Pkg.add("Runic")'
+      - name: Check formatting
+        run: julia --project=@runic -m Runic --check --diff src test docs

@@ -1,6 +1,11 @@
 # ModelPNPS
 
+[![Docs][docs-badge]][docs-url]
 [![Build Status][ci-badge]][ci-workflow]
+[![Coverage][codecov-badge]][codecov-url]
+[![Aqua QA][aqua-badge]][aqua-url]
+[![JET][jet-badge]][jet-url]
+[![Runic][runic-badge]][runic-url]
 
 **High-fidelity forward modelling of PNPS pulse-characterisation traces.**
 
@@ -59,7 +64,7 @@ in the General registry) and requires Julia 1.12 or later. From the Julia REPL:
 
 ```julia
 import Pkg
-Pkg.add(; url = "https://github.com/jtravs/ModelPNPS.jl")
+Pkg.add(; url = "https://github.com/LupoLab/ModelPNPS.jl")
 ```
 
 ## Quick start
@@ -121,5 +126,15 @@ ModelPNPS is jointly developed by John Travers
 ([@jtravs](https://github.com/jtravs)) and Chris Brahms
 ([@chrisbrahms](https://github.com/chrisbrahms)).
 
-[ci-badge]: https://github.com/jtravs/ModelPNPS.jl/actions/workflows/CI.yml/badge.svg?branch=main
-[ci-workflow]: https://github.com/jtravs/ModelPNPS.jl/actions/workflows/CI.yml?query=branch%3Amain
+[docs-badge]: https://img.shields.io/badge/docs-dev-blue.svg
+[docs-url]: https://lupolab.github.io/ModelPNPS.jl/dev/
+[ci-badge]: https://github.com/LupoLab/ModelPNPS.jl/actions/workflows/CI.yml/badge.svg?branch=main
+[ci-workflow]: https://github.com/LupoLab/ModelPNPS.jl/actions/workflows/CI.yml?query=branch%3Amain
+[codecov-badge]: https://codecov.io/gh/LupoLab/ModelPNPS.jl/branch/main/graph/badge.svg
+[codecov-url]: https://codecov.io/gh/LupoLab/ModelPNPS.jl
+[aqua-badge]: https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg
+[aqua-url]: https://github.com/JuliaTesting/Aqua.jl
+[jet-badge]: https://img.shields.io/badge/tested%20with-JET.jl-233f9a.svg
+[jet-url]: https://github.com/aviatesk/JET.jl
+[runic-badge]: https://img.shields.io/badge/code%20style-Runic-2a6099.svg
+[runic-url]: https://github.com/fredrikekre/Runic.jl
