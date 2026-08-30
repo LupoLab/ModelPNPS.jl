@@ -12,7 +12,7 @@ makedocs(;
     checkdocs = :all,
     doctest = true,
     format = Documenter.HTML(;
-        canonical = "https://lupolab.github.io/ModelPNPS.jl",
+        canonical = "https://lupo-lab.com/ModelPNPS.jl",
         edit_link = "main",
         assets = String[],
         mathengine = Documenter.MathJax3(),

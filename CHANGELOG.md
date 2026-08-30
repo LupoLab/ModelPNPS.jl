@@ -59,6 +59,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Tightened setup field types so callable storage remains inferable.
 - Pointed the badges, documentation URLs and Documenter deploy target at
   `LupoLab/ModelPNPS.jl`, the actual repository, instead of `jtravs/ModelPNPS.jl`.
+- Documentation links now use the organisation's custom domain,
+  `lupo-lab.com/ModelPNPS.jl`, which is what `lupolab.github.io` redirects to.
 - CI now tests Julia 1.12 and current stable, matching `[compat] julia`; it
   previously included 1.10, which cannot resolve the project.
 - Brought the hand-written docstring signature lines back in line with the code, and

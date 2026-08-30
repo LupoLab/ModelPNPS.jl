@@ -175,7 +175,7 @@ of device memory at 25–30 s per delay point.
 GPU support is **experimental but working**, and currently needs the
 `modal-fixed` branch of Luna.jl (see [Installation](#installation)). The device
 code paths are covered in CI on `JLArrays`, so they are tested without a GPU. See
-the [Running on a GPU](https://lupolab.github.io/ModelPNPS.jl/dev/gpu/) manual
+the [Running on a GPU](https://lupo-lab.com/ModelPNPS.jl/dev/gpu/) manual
 page for the memory budget, the world-age rule that decides where `arraytype`
 must be passed, and the practical setup.
 
@@ -197,7 +197,7 @@ For a faster development loop, select one isolated group with `GROUP=Core`,
 ## Documentation
 
 Full documentation is at
-[lupolab.github.io/ModelPNPS.jl](https://lupolab.github.io/ModelPNPS.jl/dev/),
+[lupo-lab.com/ModelPNPS.jl](https://lupo-lab.com/ModelPNPS.jl/dev/),
 built with [Documenter.jl](https://documenter.juliadocs.org/) from [`docs/`](docs/):
 
 - **Trace Simulation** — the physical model, beam and window types, worked
@@ -215,9 +215,9 @@ ModelPNPS is jointly developed by John Travers
 ([@jtravs](https://github.com/jtravs)) and Chris Brahms
 ([@chrisbrahms](https://github.com/chrisbrahms)).
 
-[sd-docs]: https://lupolab.github.io/ModelPNPS.jl/dev/trace_simulation/#Self-diffraction-geometry
+[sd-docs]: https://lupo-lab.com/ModelPNPS.jl/dev/trace_simulation/#Self-diffraction-geometry
 [docs-badge]: https://img.shields.io/badge/docs-dev-blue.svg
-[docs-url]: https://lupolab.github.io/ModelPNPS.jl/dev/
+[docs-url]: https://lupo-lab.com/ModelPNPS.jl/dev/
 [ci-badge]: https://github.com/LupoLab/ModelPNPS.jl/actions/workflows/CI.yml/badge.svg?branch=main
 [ci-workflow]: https://github.com/LupoLab/ModelPNPS.jl/actions/workflows/CI.yml?query=branch%3Amain
 [codecov-badge]: https://codecov.io/gh/LupoLab/ModelPNPS.jl/branch/main/graph/badge.svg
