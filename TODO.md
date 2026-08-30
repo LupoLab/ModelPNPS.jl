@@ -53,10 +53,12 @@ should either get done or be argued out of existence — it is not a wish list.
 
 ## CI
 
-- **Codecov needs enabling on the repository.** `CI.yml` uploads `lcov.info` and the
-  README carries the badge, but neither works until `LupoLab/ModelPNPS.jl` is added
-  on codecov.io and, for a private repository, `CODECOV_TOKEN` is set as a repository
-  secret. The upload is `fail_ci_if_error: false`, so CI stays green in the meantime
+- **Codecov needs enabling on the repository.** `CI.yml` uploads `lcov.info`,
+  `codecov.yml` configures the reporting, and the README carries the badge — but
+  none of it does anything until the Codecov GitHub App is installed on the LupoLab
+  organisation and `CODECOV_TOKEN` is set as a repository secret. Tokenless upload
+  covers only pull requests from forks into a public repository, not pushes to
+  `main`. The upload is `fail_ci_if_error: false`, so CI stays green in the meantime
   and the badge shows "unknown".
 
 - **The documentation deploy needs `DOCUMENTER_KEY`.** `Documentation.yml` will build

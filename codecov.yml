@@ -1,0 +1,39 @@
+# Codecov configuration. See https://docs.codecov.com/docs/codecovyml-reference
+#
+# Line coverage understates this package. The test suite deliberately exercises
+# every primitive WITHOUT the propagation step — `Luna.run` is reached by exactly
+# one 32x32 smoke test — because a representative propagation is hours of GPU
+# time. Lines that only a production scan reaches will therefore never be
+# covered, and a hard target would produce red pull requests that say nothing
+# about test quality. Coverage is reported for the trend, not as a gate.
+
+codecov:
+  # Do not post a coverage status until the test jobs have finished, so a failed
+  # build reports as a failed build rather than as missing coverage.
+  require_ci_to_pass: true
+
+coverage:
+  status:
+    project:
+      default:
+        # Report the number and the delta; never fail the build on it.
+        informational: true
+    patch:
+      default:
+        # New code is where coverage is worth watching, but the same argument
+        # applies: a device kernel or a scan-resume branch cannot be covered by
+        # a laptop-fast suite.
+        informational: true
+
+comment:
+  layout: "reach, diff, files"
+  # Only comment when the pull request actually moves coverage.
+  require_changes: true
+
+ignore:
+  # `julia-actions/julia-processcoverage` only instruments `src` and `ext`, so
+  # these are already absent; listed so that widening that input later does not
+  # silently start counting scripts and manual examples as production code.
+  - "examples"
+  - "docs"
+  - "test"
