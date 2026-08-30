@@ -4,11 +4,14 @@ CurrentModule = ModelPNPS
 
 # Accuracy and Validation
 
-A TG-FROG trace is a **weak** signal sitting next to three strong pumps. That single
-fact drives everything on this page: the default adaptive stepper does not
-automatically control the quantity you care about, the apodisation cadence interacts
-with the step count, and the only way to trust a new code path is to difference it
-against reference data.
+A TG-FROG trace is a **weak** signal sitting next to three strong pumps. Most of
+this page follows from that fact: the default adaptive stepper does not
+automatically control the quantity you care about, the apodisation cadence
+interacts with the step count, and a new code path is trusted by differencing it
+against reference data. For the approximations the simulation itself makes —
+representation, boundary, discretisation, interfaces — see the reference paper
+([The paper](index.md#The-paper)), which enumerates and bounds each one for the
+production instrument model.
 
 ## The weak-signal problem
 

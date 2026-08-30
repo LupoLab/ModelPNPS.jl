@@ -70,12 +70,12 @@ angular frequency.
 spectral_window!(pulse, 148e-9, 830e-9; wfrac_blue = 0.05, wfrac_red = 0.03)
 ```
 
-This is not cosmetic. A DUV pulse produced by resonant dispersive-wave emission in a
-hollow fibre arrives alongside a driver remnant that can carry most of the energy —
-per-ω comparable to the UV peak even when a per-λ plot makes it look negligible, and
-delayed by hundreds of femtoseconds. Injected raw, it would dominate the χ⁽³⁾
-interaction and you would be simulating a different experiment. The window models the
-separation a real UV beamline provides.
+This step is physical, not cosmetic. A DUV pulse produced by resonant
+dispersive-wave emission in a hollow fibre arrives alongside a driver remnant that
+can carry most of the energy — per-ω comparable to the UV peak even when a per-λ
+plot makes it look negligible, and delayed by hundreds of femtoseconds. Injected
+raw, it would dominate the χ⁽³⁾ interaction and you would be simulating a different
+experiment. The window models the separation a real UV beamline provides.
 
 !!! important "The windowed pulse is the ground truth"
     Whatever survives the window is the pulse the retrieval must be compared
@@ -103,7 +103,7 @@ pulse, tshift = center_pulse!(pulse)
 ```
 
 A pure linear spectral phase is physically irrelevant — it is a choice of time
-origin. Numerically it is anything but:
+origin. Numerically it matters twice:
 
 - It sets how much `trange` the simulation must hold. The window has to cover the
   pulse *and* the delay scan; a pulse sitting 500 fs off-origin wastes that span.
@@ -173,10 +173,10 @@ stored temporal diagnostics agree.
 ### Choosing `λlims` and `trange`
 
 The grid must hold the pulse's tails, not just its core. A red tail clipped at the
-window edge does not vanish quietly — it reappears at the z-saves as wrap-around.
-Size the window from where the spectrum actually falls below the level you care
-about (say 10⁻³ of peak), not from the nominal bandwidth, and give `trange` room for
-the centred pulse *plus* the full delay scan.
+window edge reappears at the z-saves as wrap-around. Size the window from where
+the spectrum actually falls below the level you care about (say 10⁻³ of peak), not
+from the nominal bandwidth, and give `trange` room for the centred pulse *plus*
+the full delay scan.
 
 ## Worked sequence
 
@@ -210,6 +210,25 @@ end
 
 If that last fraction is not very close to 1, `trange` is about to be too small, or
 the window has left something in the file that does not belong in the simulation.
+
+## Example: a single-cycle RDW pulse
+
+The final validation of the reference paper (see [The paper](index.md#The-paper))
+runs exactly the sequence above. The resonant-dispersive-wave emission of a
+gas-filled hollow-capillary fibre source — a 1.06 fs pulse with a structured
+spectrum and a train of trailing satellites — is simulated at the generation
+stage, conditioned with `spectral_window!` (148–830 nm) and `center_pulse!`, and
+injected into the virtual TG-FROG instrument with `input_pulse`, exactly as a
+real measurement would receive it. The trace below was recorded at a 9.5 µm
+fused silica substrate through a 2.0 mm collection hole; because the injected
+field is known exactly, retrievals of this trace can be scored against the
+truth.
+
+![Simulated TG-FROG trace of a single-cycle RDW pulse, and the injected pulse itself](assets/rdw_trace.png)
+
+*Left: the simulated TG-FROG trace of the RDW pulse at a 9.5 µm fused silica
+substrate. Right: the temporal intensity of the injected pulse — a 1.06 fs main
+peak with trailing satellites from the soliton dynamics of the source.*
 
 ## API
 

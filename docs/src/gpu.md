@@ -9,15 +9,16 @@ dominated by 3-D FFTs on a state of shape `(Nω, Nky, Nkx)`. That is exactly the
 a GPU is built for, and ModelPNPS runs the whole propagation and extraction path on
 one by passing a single keyword.
 
-The speedup is the difference between a scan being feasible and not:
+The speedup, measured on the same geometry, is a factor of about 160:
 
 | Hardware | Per delay point | 200-point scan |
 |---|---|---|
 | NVIDIA H200 | **42 s** | ~2.3 h |
 | 2 CPU cores | **1.9 h** | ~16 days |
 
-That is a factor of **≈ 160**, measured on the same geometry. A campaign that was a
-cluster allocation becomes an afternoon on a single rented card.
+A 200-point scan is a few hours on one card rather than a cluster allocation;
+the full validation dataset behind the reference paper (see
+[The paper](index.md#The-paper)) was generated this way.
 
 !!! warning "Experimental, and it needs CUDA.jl"
     GPU support is **working but experimental**. Only NVIDIA cards are supported,
@@ -32,9 +33,10 @@ cluster allocation becomes an afternoon on a single rented card.
     whole package rather than of the GPU path in particular; see the README's
     installation section.
 
-    Everything on this page is exercised by the campaign scripts and by the device
-    test group, which runs the full device path on `JLArrays` so that CI covers it
-    without a GPU — but the interface may still change.
+    Everything on this page has been exercised at production scale (it is how the
+    reference paper's validation dataset was generated) and is covered by the
+    device test group, which runs the full device path on `JLArrays` so that CI
+    tests it without a GPU — but the interface may still change.
 
 ## Turning it on
 
@@ -54,12 +56,12 @@ setup_args = (;
 run_scan(setup_args, τ; scan_name = "my_run", exec = Scans.LocalExec())
 ```
 
-Everything that follows is about doing this on a real machine without running out of
-memory or waiting for a plan that never comes.
+The rest of this page is about doing this on a real machine without running out of
+memory or losing an hour to FFT planning.
 
 ## Pass `arraytype` inside `setup_args`, not as a `run_scan` keyword
 
-This is the one structural rule, and it is not stylistic.
+This is a structural rule, not a style preference.
 
 `arraytype = :cuda` is a **symbol**, resolved lazily by `Luna.resolve_arraytype`,
 which loads CUDA.jl at the moment it is called. Two consequences follow.
@@ -95,8 +97,8 @@ which on a large grid it usually is.
 
 ## Budgeting device memory
 
-Guessing is expensive: finding out that a shape does not fit by running it is an
-hour of rented GPU and a dead process. [`memory_budget`](@ref) takes the same
+Finding out that a shape does not fit by running it costs an hour of rented GPU
+and a dead process. [`memory_budget`](@ref) takes the same
 `setup_args` NamedTuple that [`run_scan`](@ref) does, reads only the grid-determining
 entries, and returns a per-buffer breakdown in GiB. Building the 1-D time grid is
 the entire cost, so it is free to call.
@@ -123,8 +125,8 @@ does **not**; see [Field-Resolved Mode](field_mode.md#Cost).
 
 ### Guard the launch
 
-The campaign scripts refuse to start rather than dying an hour in, and the pattern is
-worth copying:
+The GPU example script refuses to start rather than dying an hour in, and the
+pattern is worth copying:
 
 ```julia
 bu = memory_budget(setup_args)
@@ -186,9 +188,9 @@ Luna.set_fftw_mode(:estimate)
 Luna.set_fftw_threads(Threads.nthreads())
 ```
 
-`:estimate` planning matters more than it looks. MEASURE-class planning of
-production-size 3-D transforms takes tens of minutes per worker, and every ModelPNPS
-production script uses `:estimate`. Set both through [`run_scan`](@ref)'s
+`:estimate` planning matters more than it looks: MEASURE-class planning of
+production-size 3-D transforms takes tens of minutes per worker unless wisdom has
+been pregenerated for the exact grid and thread count. Set both through [`run_scan`](@ref)'s
 `fftw_threads` and `fftw_mode` keywords as well: they are applied exactly where the
 plans are created, which is the only place that reaches multi-worker `procs` scans —
 a top-level call does not.
@@ -207,7 +209,7 @@ machine is rented by the hour.
 
 ## A dry-run gate
 
-Every campaign script supports a dry run: build the configuration, print the budget,
+Both example scripts support a dry run: build the configuration, print the budget,
 check the card, and exit before propagating anything. It costs seconds and catches
 the mistakes that otherwise surface hours in.
 

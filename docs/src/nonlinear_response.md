@@ -118,9 +118,19 @@ The delayed response roughly doubles the work in the nonlinear step and adds
 buffers on the doubled time grid. For few-femtosecond DUV pulses in a thin
 substrate the electronic response dominates and `raman = false` is the right
 default. Turn it on when the pulse is long enough for the nuclear response to
-follow it, or when you specifically want to know how much of the trace it accounts
-for — in which case run both and difference them, which is the only statement that
-means anything.
+follow it, or when you want to know how much of the trace it accounts for — in
+which case run both and difference the traces.
+
+That differencing has been done at production scale. The reference paper (see
+[The paper](index.md#The-paper)) ran its 1 fs, 260 nm thickness series twice
+through the full 3D instrument model, once with the instantaneous Kerr response
+and once with the multimode Hollenbeck–Cantrell silica response at
+``f_R = 0.18``, all else identical. The delayed response distorts the trace at
+the ``10^{-4}``–``10^{-3}`` level over 4–40 µm of fused silica, concentrated in
+the delay wings as a one-sided vibrational wake; retrieving the Raman-containing
+traces with an instantaneous forward model shifts the retrieved duration by at
+most 0.02 fs. At these thicknesses the delayed response is measurable in the
+trace and negligible in the retrieved pulse.
 
 ## Not available in field mode
 

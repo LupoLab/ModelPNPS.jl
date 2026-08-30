@@ -12,11 +12,28 @@ benchmarking and developing retrieval algorithms.
 
 The propagation is performed by
 [Luna.jl](https://github.com/LupoLab/Luna.jl) using its angular-spectrum
-free-space propagator and instantaneous Kerr χ⁽³⁾ response. A typical run
-requires a SLURM cluster — full delay scans with realistic grid sizes
-(`Nω` ≈ 4096, `N` ≈ 256–1024) take tens of minutes per delay point.
+free-space propagator and instantaneous Kerr χ⁽³⁾ response. A production run
+needs either a GPU or a SLURM cluster: full delay scans at realistic grid sizes
+(`Nω` ≈ 4096, `N` ≈ 256–1024) take tens of minutes to hours per delay point on
+CPUs, and well under a minute on a data-centre GPU (see
+[Running on a GPU](gpu.md)).
+
+The complete specification of this instrument model — including bounds on every
+approximation the simulation makes, all at or below the ``10^{-4}`` level on the
+trace — is given in the reference paper (see [The paper](index.md#The-paper)),
+which used ModelPNPS to generate the ground-truth traces for its retrieval
+validation study.
 
 ## Physical model
+
+![The folded-boxcar TG-FROG geometry](assets/tgfrog_geometry.png)
+
+*The geometry ModelPNPS models, from the reference paper: (a) the four-hole
+input mask, with hole diameter `D` and hole-centre offset `d` from the
+symmetry axes; (b) the optical chain — the three beamlets are crossed by a
+focusing optic inside the thin dispersive substrate, and the diffracted signal
+leaves through the background-free fourth direction and passes the signal
+aperture. Inset: the scanned delay τ of the gate pair relative to the probe.*
 
 Three input beams (two gates `g1`, `g2` and a delayed test pulse `t`) are
 crossed inside a thin nonlinear substrate (e.g. UV fused silica). Their
@@ -38,6 +55,18 @@ The boxcar layout (looking along +z):
 
 Scanning the test-pulse delay τ and spectrally resolving the diffracted signal
 yields a 2-D `I(ω, τ)` spectrogram — the TG-FROG trace.
+
+Because the beams are propagated rather than idealised, the trace contains the
+instrument effects a real measurement contains. Dispersion in the substrate
+reshapes the pulse as it generates signal. The crossed beams reach each point
+of the focus with different relative arrival times, which smears the trace
+along the delay axis with a width set by the mask geometry and wavelength
+alone, ``\sigma \propto (d/D)\,\lambda_0/c``. And the apertures act as
+frequency-dependent spatial filters, on the input beamlets (so the pulse that
+actually gates the interaction is the mask-vignetted beamlet, saved as
+`Iω_beamlet`) and on the collected signal. The reference paper (see
+[The paper](index.md#The-paper)) derives each effect and measures its size on
+this simulation.
 
 The simulation pipeline is:
 
@@ -164,9 +193,15 @@ exec = Scans.SlurmExec(@__FILE__, length(τ); memory="18G", arraymode=:batch)
 run_scan(setup, τ; scan_name="my_mask_run", exec)
 ```
 
-See the
-[`tgfrog_simulation_mask_2fs.jl` example][mask-example]
-(and the 1 fs variant) for the full annotated scripts.
+See the [`tgfrog_window_series.jl` example][slurm-example] for a full
+production-scale script: the same beam and mask scheme, a ladder of substrate
+thicknesses from one propagation (`zsave`), and a series of collection-window
+diameters recorded simultaneously. The
+[`tgfrog_window_series_gpu.jl` example][gpu-example] runs the same measurement
+on a single GPU.
+
+[slurm-example]: https://github.com/LupoLab/ModelPNPS.jl/blob/main/examples/tgfrog_window_series.jl
+[gpu-example]: https://github.com/LupoLab/ModelPNPS.jl/blob/main/examples/tgfrog_window_series_gpu.jl
 
 ## Worked example: Gaussian-beam scheme
 
@@ -194,12 +229,6 @@ setup = build_setup(; λ0, τfwhm=2e-15, energy=0.2e-6,
 exec = Scans.SlurmExec(@__FILE__, length(τ); memory="18G", arraymode=:batch)
 run_scan(setup, τ; scan_name="my_gaussian_run", exec)
 ```
-
-See the
-[`tgfrog_simulation_gaussian.jl` example][gaussian-example].
-
-[mask-example]: https://github.com/LupoLab/ModelPNPS.jl/blob/main/examples/tgfrog_simulation_mask_2fs.jl
-[gaussian-example]: https://github.com/LupoLab/ModelPNPS.jl/blob/main/examples/tgfrog_simulation_gaussian.jl
 
 ## Spatial grid sizing
 

@@ -7,24 +7,49 @@
 [![JET][jet-badge]][jet-url]
 [![Runic][runic-badge]][runic-url]
 
-**High-fidelity forward modelling of PNPS pulse-characterisation traces.**
+**Forward modelling of PNPS pulse-characterisation measurements from the
+underlying physics.**
 
-ModelPNPS generates synthetic pulse-characterisation traces directly from the
-underlying experimental physics — full spatially-resolved nonlinear propagation
-through the measurement medium, using
-[Luna.jl](https://github.com/LupoLab/Luna.jl). Given an analytic input pulse and
-an experimental geometry, it produces the trace a real apparatus would record.
-These ground-truth traces are intended for **testing advanced retrieval
-algorithms** against a known input pulse and for **developing new
-characterisation techniques**. ModelPNPS does the forward modelling only — it
-does not perform retrieval.
+ModelPNPS simulates PNPS (parametrized nonlinear process spectrum)
+pulse-characterisation measurements in full 3D. Given an input pulse and an
+instrument geometry, it propagates the crossed beams through the measurement
+medium with [Luna.jl](https://github.com/LupoLab/Luna.jl) and records the trace
+the instrument would measure. The intended use is generating ground-truth traces
+for testing and developing retrieval algorithms: the input pulse is known
+exactly, so a retrieval can be scored against it. ModelPNPS does the forward
+modelling only — it does not perform retrieval.
 
-## Ambition
+![Simulated TG-FROG traces of a 1 fs, 260 nm pulse after 9.5, 24 and 40 µm of fused silica](docs/src/assets/thickness_traces.png)
 
-ModelPNPS aspires to be a *complete* PNPS (Parametrized Nonlinear Process
-Spectrum) trace-modelling package: full-3D, high-fidelity numerical models of
-the major pulse-characterisation experiments, in which the simulated trace
-faithfully reflects the real measurement physics —
+*Simulated TG-FROG traces of a 1 fs, 260 nm pulse after 9.5, 24 and 40 µm of
+fused silica, from the substrate-thickness series of the paper below. Nothing
+about the measurement is imposed: the transient grating, the phase-matched
+four-wave-mixing signal, the geometrical delay smearing and the chromatic
+response of the apertures all emerge from the propagation.*
+
+## The paper
+
+ModelPNPS was built for, and is described in:
+
+> J. C. Travers and C. Brahms, *Extreme ultrashort pulse retrieval with
+> differentiable physical forward models* (in preparation, 2026).
+> *(Placeholder — this reference will be updated on publication.)*
+
+Every 3D simulation in that paper was generated with this package: a complete
+virtual TG-FROG instrument, from mask diffraction through nonlinear propagation
+to chromatic signal collection, with the ground truth known exactly. The paper
+specifies the instrument model, bounds the approximations the simulation makes,
+and uses the traces to validate retrieval against dispersion, beam-geometry and
+collection effects that the standard analytic forward models omit. The retrieval
+side is implemented in the companion code, Croak, released with the paper.
+
+If you use ModelPNPS in published work, please cite the paper above.
+
+## Scope
+
+The aim is a complete PNPS trace-modelling package: 3D numerical models of the
+major pulse-characterisation experiments in which the simulated trace reflects
+the real measurement physics —
 
 - **spatial effects** (finite beam size, mode shape, beam overlap and crossing
   geometry, diffraction, apertures and mask edges),
@@ -35,15 +60,14 @@ faithfully reflects the real measurement physics —
 - **real χ⁽ⁿ⁾ nonlinear efficiency** (not an idealised instantaneous
   thin-medium response).
 
-The aim is faithful numerical experiments for benchmarking and developing
-retrieval algorithms, especially in regimes (broadband DUV/VUV, thick media,
-strong phase mismatch) where the usual analytic forward models break down.
+This matters most where the usual analytic forward models break down: broadband
+DUV/VUV pulses, thick media, strong phase mismatch.
 
-## Status & roadmap
+## Status and roadmap
 
-The currently implemented process is **TG-FROG** (Transient-Grating FROG). The
+The currently implemented process is **TG-FROG** (transient-grating FROG). The
 package is organised around the Geib et al. (2019) PNPS taxonomy, in which every
-technique is a **(nonlinear process × parametrization)** pair:
+technique is a (nonlinear process × parametrization) pair:
 
 | Technique | Process | Parametrization | Status |
 |-----------|---------|-----------------|--------|
@@ -59,9 +83,9 @@ technique is a **(nonlinear process × parametrization)** pair:
 
 The **self-diffraction** beam layout is built and grid-sized:
 `build_setup(; geometry = :sd, ...)` places two collinear holes instead of the
-four-hole boxcar and puts the `2k_E − k_G` signal one slot further out on the same
-axis. Windowed extraction works there as it does for TG; the `Iω_full` diagnostic
-and `signal_quadrant_norm` are still boxcar-specific. See the
+four-hole boxcar and puts the `2k_E − k_G` signal one slot further out on the
+same axis. Windowed extraction works there as it does for TG; the `Iω_full`
+diagnostic and `signal_quadrant_norm` are still boxcar-specific. See the
 [self-diffraction geometry][sd-docs] section of the manual.
 
 ## Installation
@@ -71,7 +95,7 @@ ModelPNPS requires Julia 1.12 or later and the **`modal-fixed` branch of
 GPU-specific: the package is written against Luna APIs — `Output.willsave`,
 `resolve_arraytype`, `HostOutput`, `Luna.run`'s `twin_period` and `step_on`, the
 batched Raman and field-mode responses — that are not yet in a registered Luna
-release, and it will not even load without them.
+release, and it will not load without them.
 
 Add Luna first, so the resolver has the branch before it looks in the registry:
 
@@ -82,9 +106,9 @@ Pkg.add(; url = "https://github.com/LupoLab/ModelPNPS.jl")
 ```
 
 Working *inside* a clone of this repository needs no such step — `Project.toml`
-carries a `[sources]` entry pointing at the branch, so `Pkg.instantiate()` gets it
-automatically. That entry is only honoured for the active project, which is why a
-downstream environment has to add the branch itself.
+carries a `[sources]` entry pointing at the branch, so `Pkg.instantiate()` gets
+it automatically. That entry is only honoured for the active project, which is
+why a downstream environment has to add the branch itself.
 
 For GPU runs, add CUDA.jl as well:
 
@@ -124,8 +148,9 @@ nt = load_simulated_scan("my_tgfrog_run_collected.h5")
 # nt.ω, nt.τ, nt.trace (Nω × Nτ), nt.Iω, nt.It, ...
 ```
 
-Runnable, annotated scripts live in [`examples/`](examples/): two mask-scheme
-runs (1 fs and 2 fs) and the Gaussian-beam comparison.
+Two runnable, annotated scripts live in [`examples/`](examples/): a
+production-scale delay scan for a SLURM cluster, and the same measurement on a
+single GPU.
 
 ## Beyond the analytic Gaussian
 
@@ -134,19 +159,21 @@ instantaneous-Kerr medium:
 
 - **Measured or simulated input pulses.** Inject a real complex spectrum with
   `input_pulse`, after conditioning it with `load_input_pulse`,
-  `spectral_window!` and `center_pulse!` — the way to test a retrieval against
-  the light a particular laser actually produces.
+  `spectral_window!` and `center_pulse!`. This is how a retrieval is tested
+  against the light a particular laser actually produces.
+- **Chirped inputs.** The `GDD` and `TOD` keywords add group-delay dispersion
+  and third-order phase to the analytic pulse.
 - **Delayed nuclear response.** `raman = true` adds the Raman contribution
   alongside the electronic Kerr effect, in a convention whose quasi-static limit
   reproduces the Kerr-only response exactly.
 - **Field-resolved propagation.** `field_mode = true` propagates the real,
   carrier-resolved field instead of an envelope — no carrier split, no dropped
-  third harmonic — which is how the envelope approximation itself gets tested at
+  third harmonic. This is how the envelope approximation itself is tested at
   single-cycle durations.
 - **Free intermediate thicknesses.** One `zsave` vector gets a whole ladder of
   substrate thicknesses out of a single scan.
 
-## Runs on a GPU — about 160× faster
+## Running on a GPU
 
 The whole propagation and extraction path runs on an NVIDIA GPU by passing one
 keyword:
@@ -179,13 +206,14 @@ the [Running on a GPU](https://lupo-lab.com/ModelPNPS.jl/dev/gpu/) manual
 page for the memory budget, the world-age rule that decides where `arraytype`
 must be passed, and the practical setup.
 
-## Designed for HPC
+## Running on a cluster
 
 The CPU path remains fully supported. A full delay scan at realistic grid sizes
 (`Nω` ≈ 4096, `N` ≈ 256–1024) is CPU-hours of work per delay point and is
 intended to run on a SLURM cluster via `Luna.Scans.SlurmExec`, one task per
-delay. The test suite stays laptop-fast: it exercises every primitive without the
-propagation step (plus one tiny end-to-end smoke run) and completes in seconds —
+delay. The test suite stays laptop-fast: it exercises every primitive without
+the propagation step (plus one tiny end-to-end smoke run) and completes in
+seconds —
 
 ```julia
 import Pkg; Pkg.test("ModelPNPS")
@@ -211,6 +239,7 @@ built with [Documenter.jl](https://documenter.juliadocs.org/) from [`docs/`](doc
 - **PNPS Framework** — the taxonomy and roadmap.
 
 ## Credits
+
 ModelPNPS is jointly developed by John Travers
 ([@jtravs](https://github.com/jtravs)) and Chris Brahms
 ([@chrisbrahms](https://github.com/chrisbrahms)).

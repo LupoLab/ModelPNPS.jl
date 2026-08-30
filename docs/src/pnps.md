@@ -8,11 +8,18 @@ ModelPNPS is organised around the **PNPS** (Parametrized Nonlinear Process
 Spectrum) formalism of Geib et al. (2019)[^geib], which provides a single
 mathematical description for the whole family of self-referenced ultrashort-pulse
 measurement techniques — FROG, d-scan, MIIPS, time-domain ptychography and their
-many process variants.
+many process variants. How the framework extends when the idealisations behind
+the standard forward models fail — dispersion in the nonlinear medium, the
+beam-crossing geometry, the chromatic collection aperture — is the subject of
+the paper ModelPNPS was built for[^travers].
 
 [^geib]: N. C. Geib, M. Zilk, T. Pertsch, and F. Eilenberger,
     *"Common pulse retrieval algorithm: a fast and universal method to retrieve
     ultrashort pulses,"* Optica **6**, 495–505 (2019).
+
+[^travers]: J. C. Travers and C. Brahms, *"Extreme ultrashort pulse retrieval
+    with differentiable physical forward models"* (in preparation, 2026).
+    Placeholder — this reference will be updated on publication.
 
 ## The PNPS trace
 
@@ -68,7 +75,7 @@ methods depend on second-order nonlinearity support arriving in Luna.
 |-----------|---------|-----------------|--------|
 | **TG-FROG** | TG (four-wave mixing) | delay | ✅ implemented |
 | X-TG-FROG | TG + reference | delay | 🔜 planned |
-| SD-FROG | SD | delay | 🔜 planned |
+| SD-FROG | SD | delay | 🟡 input geometry implemented |
 | SHG-FROG | SHG | delay | ⏳ pending Luna SHG/SFG support |
 | THG-FROG | THG | delay | ⏳ planned |
 | X-FROG (SHG/SD/THG) | cross-correlation | delay | ⏳ planned |
@@ -76,10 +83,10 @@ methods depend on second-order nonlinearity support arriving in Luna.
 | SD-d-scan | SD | glass insertion | 🔜 planned |
 | Time-domain ptychography | SHG/THG/SD | position | ⏳ planned |
 
-Legend: ✅ available · 🔜 planned next · ⏳ planned (may depend on upstream
-features).
+Legend: ✅ available · 🟡 partial · 🔜 planned next · ⏳ planned (may depend
+on upstream features).
 
-The high-fidelity modelling goal is the same across every entry: capture the
-full spatial, dispersive, phase-matching, walkoff and nonlinear-efficiency
-physics of the real experiment, so that the simulated trace is a faithful
-ground truth for retrieval-algorithm development and validation.
+The modelling goal is the same across every entry: capture the spatial,
+dispersive, phase-matching, walkoff and nonlinear-efficiency physics of the
+real experiment, so that the simulated trace is a usable ground truth for
+retrieval-algorithm development and validation.

@@ -24,6 +24,13 @@ level, "the forward model is an envelope model" is a live hypothesis, and the on
 way to test it is to run the same geometry in both representations and difference
 the traces.
 
+That test has been run. The reference paper (see [The paper](index.md#The-paper))
+repeated 16 delay points of its 1 fs production scan in field-resolved mode and
+measured an envelope-versus-field trace difference of ``1.2\times10^{-5}`` at
+the 9.5 µm substrate — a factor of about 400 below the model residual under
+investigation there, which exonerated the envelope representation. The mode
+exists to make exactly this kind of statement possible.
+
 Three things differ on a real grid:
 
 - there is **no carrier/envelope split** — the field is the field;

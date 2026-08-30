@@ -4,22 +4,52 @@ CurrentModule = ModelPNPS
 
 # ModelPNPS
 
-**ModelPNPS** is a Julia package for *high-fidelity forward modelling* of PNPS
-(Parametrized Nonlinear Process Spectrum) pulse-characterisation traces. Given
-an analytic input pulse and an experimental geometry, it generates the trace a
-real apparatus would record by full spatially-resolved nonlinear propagation
-through the measurement medium, using
-[Luna.jl](https://github.com/LupoLab/Luna.jl).
+**ModelPNPS** is a Julia package for forward modelling of PNPS (Parametrized
+Nonlinear Process Spectrum) pulse-characterisation measurements. Given an input
+pulse and an experimental geometry, it generates the trace a real apparatus
+would record, by full spatially-resolved nonlinear propagation through the
+measurement medium using [Luna.jl](https://github.com/LupoLab/Luna.jl).
 
-The goal is not a fast 1-D approximation but a **truth model**: a faithful
-numerical experiment that captures the effects ordinarily neglected in the
-analytic forward models used inside retrieval algorithms.
+The point is a faithful numerical experiment rather than a fast 1-D
+approximation: the simulated trace contains the effects that the analytic
+forward models inside retrieval algorithms neglect. Because the input pulse is
+known exactly, such traces are ground truth for testing and developing
+retrieval algorithms.
 
-## Ambition
+![Simulated TG-FROG traces of a 1 fs, 260 nm pulse after 9.5, 24 and 40 µm of fused silica](assets/thickness_traces.png)
 
-ModelPNPS aspires to be a *complete* PNPS trace-modelling package — full-3D,
-high-fidelity numerical models of the major pulse-characterisation experiments,
-built so that the simulated trace reflects the real physics of the measurement:
+*Simulated TG-FROG traces of a 1 fs, 260 nm pulse after 9.5, 24 and 40 µm of
+fused silica — the substrate-thickness series of the reference paper below.
+The transient grating, the phase-matched four-wave-mixing signal, the
+geometrical delay smearing and the chromatic aperture response all emerge from
+the propagation; none is imposed.*
+
+## The paper
+
+ModelPNPS was built for, and is described in:
+
+> J. C. Travers and C. Brahms, *Extreme ultrashort pulse retrieval with
+> differentiable physical forward models* (in preparation, 2026).
+> *(Placeholder — this reference will be updated on publication.)*
+
+The paper uses ModelPNPS as a first-principles virtual TG-FROG instrument: a
+transform-limited 1 fs pulse at 260 nm illuminates a four-hole boxcar mask, the
+three transmitted beamlets are focused into a fused silica substrate, and the
+tilted, spatially separated fields are propagated coherently with full
+angular-spectrum dispersion, diffraction and the Kerr nonlinearity. The signal
+is collected through an apertured window in the far field, delay by delay,
+exactly as a spectrometer would record it. The paper specifies this instrument
+in detail, bounds every approximation the simulation itself makes (at or below
+the ``10^{-4}`` level, with the delayed Raman response treated separately), and
+uses the resulting traces to validate retrieval models against the dispersion,
+beam-geometry and collection physics of few-femtosecond deep-ultraviolet
+measurements. If you use ModelPNPS in published work, please cite it.
+
+## Scope
+
+The aim is a complete PNPS trace-modelling package — 3D numerical models of
+the major pulse-characterisation experiments, built so that the simulated trace
+reflects the real physics of the measurement:
 
 - **Spatial effects** — finite beam size, mode shape, beam overlap and crossing
   geometry, diffraction, apertures and mask edges.
@@ -33,11 +63,8 @@ built so that the simulated trace reflects the real physics of the measurement:
 - **Real nonlinear efficiency** — the true χ⁽ⁿ⁾ conversion, not an idealised
   instantaneous-thin-medium response.
 
-These ground-truth traces are intended for **testing advanced retrieval
-algorithms** against a known input pulse, and for **developing new
-characterisation techniques** where the analytic forward model is not yet known
-or is known to be inadequate (e.g. broadband DUV/VUV pulses, thick media,
-strongly phase-mismatched geometries).
+These effects matter most where the analytic forward models break down:
+broadband DUV/VUV pulses, thick media, strongly phase-mismatched geometries.
 
 ## Current status
 
@@ -55,15 +82,15 @@ simulated pulse in place of the analytic Gaussian
 ([Input Pulses](input_pulses.md)), add the delayed nuclear response
 ([Nonlinear Response](nonlinear_response.md)), and propagate a real
 carrier-resolved field instead of an envelope
-([Field-Resolved Mode](field_mode.md)) — the last of these being how the envelope
-approximation itself gets tested at single-cycle durations.
+([Field-Resolved Mode](field_mode.md)) — the last of these being how the
+envelope approximation itself gets tested at single-cycle durations.
 
 !!! note "Runs on a GPU, and that is the fast way"
-    A full delay scan at realistic grid sizes is hours of work per delay point on
-    CPUs. On an NVIDIA GPU the whole propagation runs on the device: **42 s per
-    delay point on an H200 against 1.9 h on two CPU cores**, a factor of about
-    160. See [Running on a GPU](gpu.md). The CPU path remains fully supported and
-    is intended for a SLURM cluster, one task per delay.
+    A full delay scan at realistic grid sizes is hours of work per delay point
+    on CPUs. On an NVIDIA GPU the whole propagation runs on the device: 42 s per
+    delay point on an H200 against 1.9 h on two CPU cores, a factor of about
+    160. See [Running on a GPU](gpu.md). The CPU path remains fully supported
+    and is intended for a SLURM cluster, one task per delay.
 
     The unit tests stay laptop-fast either way, by exercising every primitive
     without the propagation step, plus one tiny end-to-end smoke run.
