@@ -53,13 +53,16 @@ should either get done or be argued out of existence — it is not a wish list.
 
 ## CI
 
-- **Codecov needs enabling on the repository.** `CI.yml` uploads `lcov.info`,
-  `codecov.yml` configures the reporting, and the README carries the badge — but
-  none of it does anything until the Codecov GitHub App is installed on the LupoLab
-  organisation and `CODECOV_TOKEN` is set as a repository secret. Tokenless upload
-  covers only pull requests from forks into a public repository, not pushes to
-  `main`. The upload is `fail_ci_if_error: false`, so CI stays green in the meantime
-  and the badge shows "unknown".
+- **The repository is not activated on Codecov.** `CI.yml` uploads `lcov.info`,
+  `codecov.yml` configures the reporting, `CODECOV_TOKEN` is set and the upload runs
+  — and Codecov rejects it with "Repository not found". Its API explains why:
+  `api.codecov.io/api/v2/github/LupoLab/repos/ModelPNPS.jl/` reports
+  `active: false, activated: false`. Appearing in the organisation's repository list
+  only means the GitHub App can see the repository; to the upload endpoint an
+  unactivated repository does not exist. Activating it on Codecov and using the
+  repository upload token it then issues should be the whole fix. The upload is
+  `fail_ci_if_error: false`, so CI stays green in the meantime and the badge shows
+  "unknown".
 
 - **The documentation deploy needs `DOCUMENTER_KEY`.** `Documentation.yml` will build
   on every push but cannot publish to `gh-pages` until the deploy key is set. Until

@@ -19,16 +19,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `codecov.yml`, reporting coverage informationally rather than as a gate, since a
   suite that deliberately skips the propagation step cannot meet a line-coverage
   target that would mean anything.
+- An explicit `slug` on the Codecov upload, which an organisation-wide upload token
+  requires and a repository token ignores. This does not by itself enable coverage:
+  the repository must also be activated on Codecov, without which uploads are
+  rejected as "Repository not found".
 - A `[sources]` entry resolving Luna from the `modal-fixed` branch. The package is
   written against Luna APIs that are not in a registered release and does not load
   without them, so CI had never been able to pass; it now resolves the branch the
   same way a clone of this repository does.
+- `TODO.md`, recording deferred work — the `examples/` cleanup, the absence of
+  executable manual examples and doctests, the boxcar-specific SD diagnostics, and
+  the CI services still to be enabled.
+- `build_setup` and `optimal_spatial_grid` now reject an unknown `geometry`, and
+  `build_setup` rejects `geometry = :sd` for a beam model whose builder only ever
+  places three beams. Both cases previously produced a boxcar run with no diagnostic.
 
 ### Fixed
 
-- The coverage upload, rejected with "Repository not found". An organisation-wide
-  Codecov token does not identify a repository, so the action needs an explicit
-  `slug`; it is harmless when the token is the repository's own.
 - The documentation build, which died at `import ModelPNPS` on a cold runner.
   Luna loads PyPlot unconditionally, so the build needs matplotlib; PyCall was
   binding to the runner's system python, which has none. Both workflows now set
@@ -38,15 +45,6 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Installation instructions. They presented the `modal-fixed` Luna branch as a GPU
   extra, but it is required for the package to load at all, and Luna has to be added
   before ModelPNPS so the resolver sees the branch first.
-- `TODO.md`, recording deferred work — the `examples/` cleanup, the absence of
-  executable manual examples and doctests, the boxcar-specific SD diagnostics, and
-  the CI services still to be enabled.
-- `TODO.md`, recording deferred work — the `examples/` cleanup, the absence of
-  executable manual examples and doctests, the boxcar-specific SD diagnostics, and
-  the CI services still to be enabled.
-- `build_setup` and `optimal_spatial_grid` now reject an unknown `geometry`, and
-  `build_setup` rejects `geometry = :sd` for a beam model whose builder only ever
-  places three beams. Both cases previously produced a boxcar run with no diagnostic.
 
 ### Changed
 
