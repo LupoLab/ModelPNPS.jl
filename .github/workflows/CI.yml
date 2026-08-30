@@ -53,6 +53,12 @@ jobs:
         with:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
+          # Required when CODECOV_TOKEN is an organisation-wide upload token
+          # rather than this repository's own: the org token does not identify a
+          # repository, so without a slug the upload is rejected with
+          # "Repository not found". Harmless with a repository token, which
+          # identifies the repository by itself.
+          slug: ${{ github.repository }}
           fail_ci_if_error: false
 
   quality:

@@ -26,6 +26,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The coverage upload, rejected with "Repository not found". An organisation-wide
+  Codecov token does not identify a repository, so the action needs an explicit
+  `slug`; it is harmless when the token is the repository's own.
 - The documentation build, which died at `import ModelPNPS` on a cold runner.
   Luna loads PyPlot unconditionally, so the build needs matplotlib; PyCall was
   binding to the runner's system python, which has none. Both workflows now set
