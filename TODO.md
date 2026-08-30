@@ -70,6 +70,17 @@ should either get done or be argued out of existence — it is not a wish list.
   self-hosted runner with a GPU would close that gap; failing that, the campaign
   scripts are the only real coverage.
 
+## Upstream (Luna)
+
+- **`Plotting.jl` forces matplotlib on every consumer.** `src/Luna.jl` includes
+  `Plotting.jl` unconditionally, and that does `using PyPlot`, so merely importing
+  Luna — and therefore ModelPNPS — requires a working matplotlib through PyCall.
+  This broke the documentation build on a cold CI runner, and is worked around by
+  forcing PyCall onto its own Conda python in the workflows. The real fix is
+  upstream: make PyPlot a `[weakdeps]` package extension so plotting loads only when
+  the user asks for it. That would also drop Conda, PyCall and matplotlib from every
+  headless deployment, which matters most on a GPU pod.
+
 ## Packaging
 
 - **The package depends on an unregistered Luna branch.** ModelPNPS does not load

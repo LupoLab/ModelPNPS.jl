@@ -11,6 +11,14 @@ concurrency:
   # Cancel intermediate builds: only if it is a pull request build.
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+# Luna's `Plotting.jl` does an unconditional `using PyPlot`, so `import ModelPNPS`
+# needs a working matplotlib. An empty PYTHON makes PyCall build against its own
+# Conda python rather than the runner's /usr/bin/python3, and PyPlot then installs
+# matplotlib itself on first import. Without this the build passes only when a
+# cached depot happens to carry a working PyCall, and fails on a cold runner.
+env:
+  PYTHON: ""
+
 jobs:
   test:
     # The full suite: unit tests, Aqua, ExplicitImports, JET error analysis and

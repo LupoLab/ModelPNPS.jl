@@ -26,6 +26,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The documentation build, which died at `import ModelPNPS` on a cold runner.
+  Luna loads PyPlot unconditionally, so the build needs matplotlib; PyCall was
+  binding to the runner's system python, which has none. Both workflows now set
+  `PYTHON = ""` so PyCall uses its own Conda python and PyPlot installs matplotlib
+  itself. CI had been passing only because its depot cache happened to carry a
+  working PyCall.
 - Installation instructions. They presented the `modal-fixed` Luna branch as a GPU
   extra, but it is required for the package to load at all, and Luna has to be added
   before ModelPNPS so the resolver sees the branch first.
