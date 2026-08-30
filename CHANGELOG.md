@@ -19,6 +19,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `TODO.md`, recording deferred work — the `examples/` cleanup, the absence of
   executable manual examples and doctests, the boxcar-specific SD diagnostics, and
   the CI services still to be enabled.
+- `TODO.md`, recording deferred work — the `examples/` cleanup, the absence of
+  executable manual examples and doctests, the boxcar-specific SD diagnostics, and
+  the CI services still to be enabled.
 - `build_setup` and `optimal_spatial_grid` now reject an unknown `geometry`, and
   `build_setup` rejects `geometry = :sd` for a beam model whose builder only ever
   places three beams. Both cases previously produced a boxcar run with no diagnostic.
