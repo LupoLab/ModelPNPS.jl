@@ -11,6 +11,16 @@ LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Luna = "30eb0fb0-5147-11e9-3356-d75b018717ce"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 
+# ModelPNPS is written against Luna APIs that are not in a registered release:
+# `Output.willsave`, `Utils.isdevice`, `resolve_arraytype`, `HostOutput`, the
+# `twin_period`/`step_on` arguments to `Luna.run`, `Grid`'s `fftsize`, the batched
+# Raman response and the field-mode responses. The package does not load without
+# them, so this is a hard requirement, not a GPU extra. `[sources]` applies only
+# when this project is the active environment — a downstream project must add the
+# same branch itself (see README). Remove this once the changes are in a release.
+[sources]
+Luna = {url = "https://github.com/jtravs/Luna.jl", rev = "modal-fixed"}
+
 [compat]
 Adapt = "4.7.0"
 FFTW = "1.10.0"

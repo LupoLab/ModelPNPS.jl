@@ -19,20 +19,22 @@ The speedup is the difference between a scan being feasible and not:
 That is a factor of **≈ 160**, measured on the same geometry. A campaign that was a
 cluster allocation becomes an afternoon on a single rented card.
 
-!!! warning "Experimental, and it needs a Luna branch"
-    GPU support is **working but experimental**. It currently requires the
-    `modal-fixed` branch of Luna.jl rather than the registered release:
+!!! warning "Experimental, and it needs CUDA.jl"
+    GPU support is **working but experimental**. Only NVIDIA cards are supported,
+    through CUDA.jl, which is not a dependency of ModelPNPS — add it yourself:
 
     ```julia
     import Pkg
-    Pkg.add(; url = "https://github.com/jtravs/Luna.jl", rev = "modal-fixed")
     Pkg.add("CUDA")
     ```
 
-    Only NVIDIA cards are supported, through CUDA.jl. Everything on this page is
-    exercised by the campaign scripts and by the device test group, which runs the
-    full device path on `JLArrays` so that CI covers it without a GPU — but the
-    interface may still change.
+    The `modal-fixed` branch of Luna.jl is required too, but that is true of the
+    whole package rather than of the GPU path in particular; see the README's
+    installation section.
+
+    Everything on this page is exercised by the campaign scripts and by the device
+    test group, which runs the full device path on `JLArrays` so that CI covers it
+    without a GPU — but the interface may still change.
 
 ## Turning it on
 

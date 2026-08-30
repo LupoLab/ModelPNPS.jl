@@ -66,21 +66,33 @@ and `signal_quadrant_norm` are still boxcar-specific. See the
 
 ## Installation
 
-ModelPNPS depends on [Luna.jl](https://github.com/LupoLab/Luna.jl) (registered
-in the General registry) and requires Julia 1.12 or later. From the Julia REPL:
+ModelPNPS requires Julia 1.12 or later and the **`modal-fixed` branch of
+[Luna.jl](https://github.com/jtravs/Luna.jl)**. This is not optional and not
+GPU-specific: the package is written against Luna APIs — `Output.willsave`,
+`resolve_arraytype`, `HostOutput`, `Luna.run`'s `twin_period` and `step_on`, the
+batched Raman and field-mode responses — that are not yet in a registered Luna
+release, and it will not even load without them.
+
+Add Luna first, so the resolver has the branch before it looks in the registry:
 
 ```julia
 import Pkg
+Pkg.add(; url = "https://github.com/jtravs/Luna.jl", rev = "modal-fixed")
 Pkg.add(; url = "https://github.com/LupoLab/ModelPNPS.jl")
 ```
 
-For GPU runs, add CUDA.jl and the `modal-fixed` branch of Luna.jl, which the
-device path currently requires:
+Working *inside* a clone of this repository needs no such step — `Project.toml`
+carries a `[sources]` entry pointing at the branch, so `Pkg.instantiate()` gets it
+automatically. That entry is only honoured for the active project, which is why a
+downstream environment has to add the branch itself.
+
+For GPU runs, add CUDA.jl as well:
 
 ```julia
-Pkg.add(; url = "https://github.com/jtravs/Luna.jl", rev = "modal-fixed")
 Pkg.add("CUDA")
 ```
+
+This all goes away when the Luna changes reach a registered release.
 
 ## Quick start
 

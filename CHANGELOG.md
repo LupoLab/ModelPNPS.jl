@@ -19,6 +19,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `codecov.yml`, reporting coverage informationally rather than as a gate, since a
   suite that deliberately skips the propagation step cannot meet a line-coverage
   target that would mean anything.
+- A `[sources]` entry resolving Luna from the `modal-fixed` branch. The package is
+  written against Luna APIs that are not in a registered release and does not load
+  without them, so CI had never been able to pass; it now resolves the branch the
+  same way a clone of this repository does.
+
+### Fixed
+
+- Installation instructions. They presented the `modal-fixed` Luna branch as a GPU
+  extra, but it is required for the package to load at all, and Luna has to be added
+  before ModelPNPS so the resolver sees the branch first.
 - `TODO.md`, recording deferred work — the `examples/` cleanup, the absence of
   executable manual examples and doctests, the boxcar-specific SD diagnostics, and
   the CI services still to be enabled.

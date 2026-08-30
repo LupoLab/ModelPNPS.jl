@@ -72,9 +72,19 @@ should either get done or be argued out of existence — it is not a wish list.
 
 ## Packaging
 
-- **GPU support depends on an unregistered Luna branch.** The device path currently
-  requires `jtravs/Luna.jl#modal-fixed` rather than the registered release, so it
-  cannot be expressed as a `[compat]` bound and a plain `Pkg.add` of ModelPNPS does
-  not get a working GPU setup. This resolves itself when those changes land in a
-  registered Luna release; until then it is documented in `README.md` and in the
-  manual's GPU page.
+- **The package depends on an unregistered Luna branch.** ModelPNPS does not load
+  against a registered Luna release — `Output.willsave` and a dozen other APIs it is
+  written against only exist on `jtravs/Luna.jl#modal-fixed`, which is 108 commits
+  past `v0.6.2`. `Project.toml` carries a `[sources]` entry so that the active
+  project and CI resolve the branch, but `[sources]` is ignored when ModelPNPS is
+  used *as a dependency*, so a downstream environment must add the same branch
+  itself. The `[compat] Luna = "0.6.2"` bound is satisfied but meaningless, since the
+  branch still declares that version. All of this resolves when the changes reach a
+  registered release; that is also when a General registration becomes possible,
+  since a package with `[sources]` cannot be registered.
+
+- **`[sources]` blocks `Pkg.develop` on Luna in this project.** With a URL source in
+  `Project.toml`, `Pkg.develop(path = "~/.julia/dev/Luna")` fails with ``path` and
+  `url` are conflicting specifications`. To test ModelPNPS against in-progress Luna
+  edits, use a separate development environment that `develop`s both packages, the
+  way the pod scripts do, rather than the ModelPNPS project environment.
