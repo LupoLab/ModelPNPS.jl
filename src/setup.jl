@@ -137,6 +137,21 @@ The defaults reproduce the master script
                                     and normalisation, saving two field-sized
                                     arrays; bit-identical to the materialised
                                     versions
+- `frozen_transverse = false`     — ABLATION, not physics: build the linear
+                                    operator with `k_z(ω, k⊥)` replaced by
+                                    `k_z(ω, 0)`, so every k⊥ component gets the
+                                    same ω-dependent phase and the transverse
+                                    field pattern (beamlet profiles, crossing
+                                    interference, tilt phases) is frozen exactly
+                                    at its entrance-face form, while temporal
+                                    dispersion, the nonlinearity, the
+                                    apodisation and the k-space collection all
+                                    run unchanged. Note the pulse-front tilts
+                                    live in the initial condition and remain.
+                                    Recorded in the output metadata as
+                                    `frozen_transverse` (absent = 0 = normal
+                                    propagation, which is what every
+                                    pre-existing file is)
 - `store_window = true`           — store the materialised window array(s) in
                                     the output metadata (≈1 GiB at production
                                     size); the window parameters (`window_def`)
@@ -181,6 +196,7 @@ function build_setup(;
         beamlet_profile_nr::Int = 64,
         beamlet_profile_rmax_units::Real = 6,
         factored_linop::Bool = true,
+        frozen_transverse::Bool = false,
         store_window::Bool = true,
         arraytype = Array,
         beamlets_on_host::Bool = false,
@@ -293,9 +309,12 @@ function build_setup(;
     # field-sized arrays; bit-identical to the materialised versions (Luna guarantees
     # and tests this)
     arraytype = Luna.resolve_arraytype(arraytype)
+    # `frozen_transverse` affects the LINOP ONLY: the normalisation, the windows and
+    # every transform keep the true k⊥ dependence (the ablation removes in-slab
+    # diffraction, not the collection physics).
     linop = LinearOps.make_const_linop(
         grid, xygrid, nfunreal;
-        factored = factored_linop, arraytype
+        factored = factored_linop, arraytype, frozen_transverse
     )
     normfun = NonlinearRHS.const_norm_free(
         grid, xygrid, nfunreal;
@@ -374,6 +393,11 @@ function build_setup(;
             # file always says whether it should have one.
             "beamlet_profile" => beamlet_profile ? 1 : 0,
             "field_mode" => field_mode ? 1 : 0,
+            # 1 marks a diffraction-ablated (frozen-transverse) run — NOT
+            # physics; absent/0 = normal propagation, which is what every
+            # pre-existing file is. Written so provenance is verifiable from
+            # the file alone.
+            "frozen_transverse" => frozen_transverse ? 1 : 0,
             "response" => _response_name(
                 field_mode, response,
                 raman

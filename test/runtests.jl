@@ -18,6 +18,7 @@ end
 
 if GROUP in ("All", "Physics")
     @time @safetestset "Trace simulation" include("tracesimulation_test.jl")
+    @time @safetestset "Frozen-transverse ablation" include("frozen_transverse_test.jl")
 end
 
 if GROUP in ("All", "Quality")
